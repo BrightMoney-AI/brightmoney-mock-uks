@@ -1,0 +1,129 @@
+"""Verification surfaces (design §6.3, §11.4): AUT database, Kafka, mock CallLog."""
+from __future__ import annotations
+
+import re
+import sqlite3
+
+import requests
+
+
+def _expect_match(actual, expected: str) -> bool:
+    if expected == "not_null":
+        return actual is not None and actual != ""
+    if len(expected) >= 2 and expected.startswith("/") and expected.endswith("/"):
+        return actual is not None and re.search(expected[1:-1], str(actual)) is not None
+    return str(actual) == expected
+
+
+# ---------------------------------------------------------------------------
+# Database cleanup (pre-test teardown of leftover AUT rows)
+# ---------------------------------------------------------------------------
+def cleanup_db_sqlite(sqlite_path: str, table: str, where: dict) -> None:
+    con = sqlite3.connect(sqlite_path)
+    try:
+        clause = " AND ".join(f"{k}=?" for k in where) or "1=1"
+        con.execute(f"DELETE FROM {table} WHERE {clause}", tuple(where.values()))
+        con.commit()
+    finally:
+        con.close()
+
+
+def cleanup_db_postgres(dsn: str, database: str, table: str, where: dict) -> None:
+    try:
+        import psycopg  # type: ignore
+    except ImportError:
+        return
+    host, _, port = dsn.partition(":")
+    with psycopg.connect(host=host, port=port or 5432, dbname=database) as con:  # pragma: no cover
+        with con.cursor() as cur:
+            clause = " AND ".join(f"{k}=%s" for k in where) or "TRUE"
+            cur.execute(f"DELETE FROM {table} WHERE {clause}", tuple(where.values()))
+        con.commit()
+
+
+# ---------------------------------------------------------------------------
+# Database verifier
+# ---------------------------------------------------------------------------
+def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict) -> list[str]:
+    errs: list[str] = []
+    con = sqlite3.connect(sqlite_path)
+    con.row_factory = sqlite3.Row
+    try:
+        clause = " AND ".join(f"{k}=?" for k in where) or "1=1"
+        rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", tuple(where.values())).fetchall()
+        if not rows:
+            return [f"db: no row in {table} where {where}"]
+        row = rows[0]
+        for col, exp in expect.items():
+            actual = row[col] if col in row.keys() else None
+            if not _expect_match(actual, exp):
+                errs.append(f"db: {table}.{col} expected {exp!r}, got {actual!r}")
+    finally:
+        con.close()
+    return errs
+
+
+def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect: dict) -> list[str]:
+    try:
+        import psycopg  # type: ignore
+    except ImportError:
+        return ["db: psycopg not installed — install 'psycopg[binary]' or use --aut-sqlite"]
+    host, _, port = dsn.partition(":")
+    errs: list[str] = []
+    with psycopg.connect(host=host, port=port or 5432, dbname=database) as con:  # pragma: no cover
+        with con.cursor() as cur:
+            clause = " AND ".join(f"{k}=%s" for k in where) or "TRUE"
+            cur.execute(f"SELECT * FROM {table} WHERE {clause}", tuple(where.values()))
+            cols = [d.name for d in cur.description]
+            r = cur.fetchone()
+            if not r:
+                return [f"db: no row in {table} where {where}"]
+            row = dict(zip(cols, r))
+            for col, exp in expect.items():
+                if not _expect_match(row.get(col), exp):
+                    errs.append(f"db: {table}.{col} expected {exp!r}, got {row.get(col)!r}")
+    return errs
+
+
+# ---------------------------------------------------------------------------
+# CallLog reader (via the mock admin API)
+# ---------------------------------------------------------------------------
+def verify_calls(mock_base: str, expected: dict) -> list[str]:
+    resp = requests.get(mock_base.rstrip("/") + "/mock/admin/calls", timeout=10)
+    counts = resp.json().get("counts", {})
+    errs: list[str] = []
+    for path, want in expected.items():
+        got = counts.get(path, 0)
+        if got != want:
+            errs.append(f"calls: {path} expected {want}, got {got}")
+    return errs
+
+
+# ---------------------------------------------------------------------------
+# Kafka verifier (optional)
+# ---------------------------------------------------------------------------
+def verify_kafka(bootstrap: str, topic: str, key: str, expect, timeout_s: float = 5.0) -> list[str]:
+    try:
+        from kafka import KafkaConsumer  # type: ignore
+    except ImportError:
+        return ["kafka: kafka-python not installed — skipping (install kafka-python to enable)"]
+    import json  # pragma: no cover
+    consumer = KafkaConsumer(  # pragma: no cover
+        topic, bootstrap_servers=bootstrap, auto_offset_reset="earliest",
+        consumer_timeout_ms=int(timeout_s * 1000), value_deserializer=lambda b: b,
+    )
+    found = []  # pragma: no cover
+    for msg in consumer:  # pragma: no cover
+        if key and msg.key and msg.key.decode() != key:
+            continue
+        try:
+            found.append(json.loads(msg.value))
+        except ValueError:
+            found.append({"_raw": msg.value.decode("utf-8", "replace")})
+    consumer.close()  # pragma: no cover
+    if expect == "absent":  # pragma: no cover
+        return [] if not found else [f"kafka: expected no message on {topic}, got {len(found)}"]
+    for ev in found:  # pragma: no cover
+        if all(_expect_match(ev.get(k), v) for k, v in expect.items()):
+            return []
+    return [f"kafka: no message on {topic} matching {expect}"]  # pragma: no cover

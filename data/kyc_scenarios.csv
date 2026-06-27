@@ -1,0 +1,7 @@
+method,path,default_format,scenario,priority,is_sequence,match_key,match_value,seq_index,status,format,delay_ms,canonical,raw_override,headers
+POST,/vendor/idology/verify,json,idology-pass,5,,$.test_path,pass_idology,,200,json,0,"{""summary_result"":""PASS""}",,
+POST,/vendor/idology/verify,json,idology-fail-no-esc,5,,$.test_path,ln_pass,,200,json,0,"{""summary_result"":""FAIL"",""escalate"":false}",,
+POST,/vendor/lexisnexis/verify,json,ln-pass,5,,$.test_path,ln_pass,,200,json,0,"{""result"":""PASS""}",,
+POST,/vendor/persona/inquiry,json,persona-poll,5,true,,,0,200,json,0,"{""state"":""PENDING""}",,
+POST,/vendor/persona/inquiry,json,persona-poll,5,true,,,1,200,json,0,"{""state"":""PENDING""}",,
+POST,/vendor/persona/inquiry,json,persona-poll,5,true,,,2,200,json,0,"{""state"":""COMPLETED"",""persona_kyc_verified"":true}",,

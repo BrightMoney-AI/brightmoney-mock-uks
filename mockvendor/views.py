@@ -1,0 +1,93 @@
+"""Catch-all serve view (design §3.1 request lifecycle).
+
+1. receive request (method, path, headers, body)
+2. look up endpoint + select scenario (matcher)
+3. advance sequence cursor if needed (matcher)
+4. apply delay (delay_ms)
+5. serialize the canonical body to the target format
+6. return HttpResponse with status + headers; write a CallLog row
+"""
+from __future__ import annotations
+
+import time
+
+from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+
+from . import matcher
+from .models import CallLog
+from .serializers_fmt import get_serializer
+
+
+def _target_format(response, accept_header: str) -> str:
+    """scenario/response explicit format > Accept header > endpoint default."""
+    if response.format_id:
+        return response.format.name
+    if "xml" in (accept_header or "").lower():
+        return "xml"
+    if "json" in (accept_header or "").lower():
+        return "json"
+    return response.scenario.endpoint.default_format.name
+
+
+@csrf_exempt
+def serve(request, *args, **kwargs):
+    method = request.method
+    path = request.path
+    raw_body = request.body or b""
+    body = matcher.parse_body(raw_body)
+    headers = {k[5:].replace("_", "-").title(): v for k, v in request.META.items() if k.startswith("HTTP_")}
+    run_id = request.headers.get("X-Mock-Run-Id", "")
+
+    try:
+        sel = matcher.select(method, path, headers, body, run_id=run_id)
+    except matcher.NoEndpoint:
+        CallLog.objects.create(
+            endpoint=None, scenario=None, request_method=method,
+            request_path=path, request_body=_safe(raw_body), response_status=404,
+        )
+        return HttpResponse(b'{"error":"no_endpoint"}', status=404,
+                            content_type="application/json")
+    except matcher.NoScenario:
+        CallLog.objects.create(
+            endpoint=None, scenario=None, request_method=method,
+            request_path=path, request_body=_safe(raw_body), response_status=404,
+        )
+        return HttpResponse(b'{"error":"no_scenario"}', status=404,
+                            content_type="application/json")
+
+    resp = sel.response
+
+    # 4) delay engine
+    if resp.delay_ms:
+        time.sleep(resp.delay_ms / 1000.0)
+
+    # 5) serialize (raw_override wins for byte-exact / malformed payloads)
+    fmt_name = _target_format(resp, request.headers.get("Accept", ""))
+    if resp.raw_override:
+        payload = resp.raw_override.encode("utf-8")
+        try:
+            content_type = get_serializer(fmt_name).content_type
+        except KeyError:
+            content_type = "application/octet-stream"
+    else:
+        serializer = get_serializer(fmt_name)
+        payload = serializer.serialize(resp.canonical or {}, {})
+        content_type = serializer.content_type
+
+    # 6) build response + CallLog
+    http = HttpResponse(payload, status=resp.status_code, content_type=content_type)
+    for k, v in (resp.headers or {}).items():
+        http[k] = v
+
+    CallLog.objects.create(
+        endpoint=sel.endpoint, scenario=sel.scenario, request_method=method,
+        request_path=path, request_body=_safe(raw_body),
+        response_status=resp.status_code, delay_applied_ms=resp.delay_ms,
+    )
+    return http
+
+
+def _safe(raw: bytes, limit: int = 4000) -> str:
+    s = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    return s[:limit]

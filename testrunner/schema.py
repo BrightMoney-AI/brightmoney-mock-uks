@@ -1,0 +1,239 @@
+"""Parse + validate a case row against the §12 CSV rule set.
+
+In-cell syntax (§12.1): a map is ``key=value`` pairs joined by ``;``; a list is
+values joined by ``;``. A literal ``;`` or ``,`` inside a value is backslash
+escaped. ``not_null`` and ``/regex/`` are allowed on the right of an expect pair.
+Empty cells mean "not set".
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+# Reserved keys inside a seedN.resp cell; everything else is a canonical body field.
+_RESP_RESERVED = {"status", "format", "delay_ms", "raw"}
+
+
+class ValidationError(Exception):
+    pass
+
+
+def split_escaped(cell: str, sep: str = ";") -> list[str]:
+    """Split on *sep* but honour ``\\;`` / ``\\,`` escapes."""
+    out, buf, i = [], [], 0
+    while i < len(cell):
+        ch = cell[i]
+        if ch == "\\" and i + 1 < len(cell) and cell[i + 1] in ";,":
+            buf.append(cell[i + 1])
+            i += 2
+            continue
+        if ch == sep:
+            out.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return [s for s in (x.strip() for x in out) if s != ""]
+
+
+def parse_map(cell: str) -> dict:
+    """``a=1;b=2`` -> {'a': '1', 'b': '2'}."""
+    result: dict[str, str] = {}
+    for pair in split_escaped(cell):
+        if "=" not in pair:
+            raise ValidationError(f"map cell missing '=': {pair!r}")
+        k, v = pair.split("=", 1)
+        result[k.strip()] = v.strip()
+    return result
+
+
+@dataclass
+class SeedGroup:
+    index: int
+    path: str
+    method: str
+    scenario: str
+    priority: int
+    match_key: str
+    match_value: str
+    is_sequence: bool
+    resp: dict  # {status, format, delay_ms, raw, canonical:{...}}
+
+
+@dataclass
+class DbCheck:
+    table: str
+    where: dict
+    expect: dict
+
+
+@dataclass
+class KafkaCheck:
+    topic: str
+    key: str
+    expect: dict | str  # dict, or literal "absent"
+
+
+@dataclass
+class Case:
+    case_id: str
+    flow_id: str
+    tags: list[str]
+    client_context: str
+    seeds: list[SeedGroup]
+    call: dict  # {method,url,headers:{},body:{},expect_status}
+    repeat: dict  # {same_flow_id,distinct_ids,concurrent}
+    resp: dict  # {status, body:{}}
+    db_host: str
+    db_database: str
+    db_checks: list[DbCheck]
+    kafka_bootstrap: str
+    kafka_checks: list[KafkaCheck]
+    calls: dict  # {path: count}
+    notes: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+def _resp_from_cell(cell: str) -> dict:
+    m = parse_map(cell)
+    resp = {"status": int(m.get("status", 200)), "canonical": {}}
+    if "format" in m:
+        resp["format"] = m["format"]
+    if "delay_ms" in m:
+        resp["delay_ms"] = int(m["delay_ms"])
+    if "raw" in m:
+        resp["raw"] = m["raw"]
+    for k, v in m.items():
+        if k not in _RESP_RESERVED:
+            resp["canonical"][_coerce_key(k)] = _coerce(v)
+    return resp
+
+
+def _coerce_key(k: str) -> str:
+    return k
+
+
+def _coerce(v: str):
+    low = v.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if re.fullmatch(r"-?\d+", v):
+        return int(v)
+    return v
+
+
+def parse_case(row: dict) -> Case:
+    g = lambda k: (row.get(k) or "").strip()
+
+    # seed groups, numbered contiguously from 1
+    seeds: list[SeedGroup] = []
+    i = 1
+    while g(f"seed{i}.path"):
+        match_cell = g(f"seed{i}.match")
+        mk, mv = "", ""
+        if match_cell:
+            mm = parse_map(match_cell)
+            (mk, mv), = mm.items() if len(mm) == 1 else [(list(mm)[0], mm[list(mm)[0]])]
+        seeds.append(SeedGroup(
+            index=i, path=g(f"seed{i}.path"),
+            method=g(f"seed{i}.method") or "POST",
+            scenario=g(f"seed{i}.scenario"),
+            priority=int(g(f"seed{i}.priority") or 0),
+            match_key=mk, match_value=mv,
+            is_sequence=g(f"seed{i}.is_sequence").lower() in ("1", "true", "yes"),
+            resp=_resp_from_cell(g(f"seed{i}.resp")) if g(f"seed{i}.resp") else {},
+        ))
+        i += 1
+
+    # call.body.* columns
+    body = {k[len("call.body."):]: _coerce(v.strip())
+            for k, v in row.items() if k.startswith("call.body.") and (v or "").strip()}
+    call = {
+        "method": g("call.method") or "POST",
+        "url": g("call.url"),
+        "headers": parse_map(g("call.headers")) if g("call.headers") else {},
+        "body": body,
+        "expect_status": int(g("call.expect_status")) if g("call.expect_status") else None,
+    }
+    repeat = {
+        "same_flow_id": int(g("repeat.same_flow_id") or 1),
+        "distinct_ids": int(g("repeat.distinct_ids") or 1),
+        "concurrent": int(g("repeat.concurrent") or 1),
+    }
+    resp = {
+        "status": int(g("resp.status")) if g("resp.status") else None,
+        "body": parse_map(g("resp.body")) if g("resp.body") else {},
+    }
+
+    # dbN.* checks
+    db_checks: list[DbCheck] = []
+    j = 1
+    while g(f"db{j}.table"):
+        db_checks.append(DbCheck(
+            table=g(f"db{j}.table"),
+            where=parse_map(g(f"db{j}.where")) if g(f"db{j}.where") else {},
+            expect=parse_map(g(f"db{j}.expect")) if g(f"db{j}.expect") else {},
+        ))
+        j += 1
+
+    # kafkaN.* checks
+    kafka_checks: list[KafkaCheck] = []
+    k = 1
+    while g(f"kafka{k}.topic"):
+        exp_cell = g(f"kafka{k}.expect")
+        expect: dict | str = "absent" if exp_cell == "absent" else parse_map(exp_cell)
+        kafka_checks.append(KafkaCheck(topic=g(f"kafka{k}.topic"), key=g(f"kafka{k}.key"), expect=expect))
+        k += 1
+
+    calls = {}
+    if g("calls"):
+        calls = {kk: int(vv) for kk, vv in parse_map(g("calls")).items()}
+
+    return Case(
+        case_id=g("case_id"), flow_id=g("flow_id") or g("case_id"),
+        tags=split_escaped(g("tags")) if g("tags") else [],
+        client_context=g("client_context"),
+        seeds=seeds, call=call, repeat=repeat, resp=resp,
+        db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
+        kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
+        calls=calls, notes=g("notes"), raw=row,
+    )
+
+
+def validate(case: Case) -> list[str]:
+    """Return a list of MUST-rule violations (§12.3). Empty = valid."""
+    errs: list[str] = []
+    if not case.case_id:
+        errs.append("case_id is required")
+    if not case.call["url"]:
+        errs.append("call.url is required")
+    if not case.seeds:
+        errs.append("at least one seed group (seed1.*) is required")
+
+    names = [s.scenario for s in case.seeds]
+    if len(names) != len(set(names)):
+        errs.append("seedN.scenario names must be unique within the case")
+
+    for s in case.seeds:
+        if not s.path or not s.scenario or not s.resp:
+            errs.append(f"seed{s.index}: path, scenario and resp are all required")
+        if s.resp and "status" not in s.resp:
+            errs.append(f"seed{s.index}.resp: status is required")
+        if s.resp.get("raw") and s.resp.get("canonical"):
+            errs.append(f"seed{s.index}.resp: provide raw OR body fields, not both")
+
+    # endpoints shared by >1 seed group must be disambiguated
+    by_path: dict[str, list[SeedGroup]] = {}
+    for s in case.seeds:
+        by_path.setdefault((s.method, s.path), []).append(s)
+    for (_, path), grp in by_path.items():
+        if len(grp) > 1 and not all(s.match_key or s.priority for s in grp):
+            errs.append(f"endpoint {path}: multiple seed groups need match or priority")
+
+    if case.db_checks and not case.db_host:
+        errs.append("db.host is required when any dbN.* is present")
+    if case.kafka_checks and not case.kafka_bootstrap:
+        errs.append("kafka.bootstrap is required when any kafkaN.* is present")
+    return errs
