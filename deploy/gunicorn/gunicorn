@@ -1,0 +1,31 @@
+#!/bin/bash
+NAME="mock_vendor"
+DIR=/app/deploy/current/vendor-mock-framework
+USER=bright_tech
+GROUP=bright_tech
+WORKERS=4
+BIND=unix:/app/run/gunicorn.sock
+DJANGO_SETTINGS_MODULE=config.settings
+DJANGO_WSGI_MODULE=config.wsgi
+LOG_LEVEL=error
+MAX_REQUESTS=2000
+JITTER=500
+
+cd $DIR
+source /app/deploy/current/venv/bin/activate
+
+export DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE
+export PYTHONPATH=$DIR:$PYTHONPATH
+
+exec /app/deploy/current/venv/bin/gunicorn ${DJANGO_WSGI_MODULE}:application \
+  --name $NAME \
+  --workers $WORKERS \
+  --timeout 120 \
+  --user=$USER \
+  --group=$GROUP \
+  --bind=$BIND \
+  --log-level=$LOG_LEVEL \
+  --log-file=- \
+  --max-requests $MAX_REQUESTS \
+  --max-requests-jitter $JITTER \
+  --access-logformat='%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(p)s" "%(D)s"'
