@@ -31,6 +31,18 @@ def _one_response(src: dict) -> dict:
     return resp
 
 
+def _unflatten(flat: dict) -> dict:
+    """Expand dot-separated keys into nested dicts: {'a.b': v} -> {'a': {'b': v}}."""
+    out = {}
+    for key, val in flat.items():
+        parts = key.split(".")
+        d = out
+        for p in parts[:-1]:
+            d = d.setdefault(p, {})
+        d[parts[-1]] = val
+    return out
+
+
 def _seed_payload(s: schema.SeedGroup) -> dict:
     responses = [_one_response(r) for r in s.responses] or [_one_response({})]
     return {
@@ -65,8 +77,13 @@ class Runner:
 
     # --- drive ---
     def _drive_once(self, case: schema.Case, flow_id: str) -> requests.Response:
-        body = dict(case.call["body"])
-        body["flow_id"] = flow_id
+        flat = dict(case.call["body"])
+        # Inject runtime flow_id into whichever key holds it (top-level or nested e.g. data.flow_id)
+        flow_id_key = next(
+            (k for k in flat if k == "flow_id" or k.endswith(".flow_id")), "flow_id"
+        )
+        flat[flow_id_key] = flow_id
+        body = _unflatten(flat)
         return requests.request(case.call["method"], case.call["url"],
                                 json=body, headers=case.call["headers"], timeout=30)
 
