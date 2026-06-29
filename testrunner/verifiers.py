@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 
 import requests
 
@@ -90,16 +91,26 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
 # ---------------------------------------------------------------------------
 # CallLog reader (via the mock admin API)
 # ---------------------------------------------------------------------------
-def verify_calls(mock_base: str, expected: dict, baseline: dict | None = None) -> list[str]:
-    resp = requests.get(mock_base.rstrip("/") + "/mock/admin/calls", timeout=10)
-    counts = resp.json().get("counts", {})
+def verify_calls(mock_base: str, expected: dict, baseline: dict | None = None,
+                 timeout_s: float = 15.0, poll_interval_s: float = 1.0) -> list[str]:
+    """Poll the CallLog until all expected deltas are met or timeout expires.
+
+    The UKS processes KYC asynchronously — mock calls arrive seconds after
+    drive() returns. Polling avoids a false FAIL due to this delay.
+    """
     baseline = baseline or {}
-    errs: list[str] = []
-    for path, want in expected.items():
-        got = counts.get(path, 0) - baseline.get(path, 0)
-        if got != want:
-            errs.append(f"calls: {path} expected {want}, got {got}")
-    return errs
+    url = mock_base.rstrip("/") + "/mock/admin/calls"
+    deadline = time.monotonic() + timeout_s
+    while True:
+        counts = requests.get(url, timeout=10).json().get("counts", {})
+        errs = []
+        for path, want in expected.items():
+            got = counts.get(path, 0) - baseline.get(path, 0)
+            if got != want:
+                errs.append(f"calls: {path} expected {want}, got {got}")
+        if not errs or time.monotonic() >= deadline:
+            return errs
+        time.sleep(poll_interval_s)
 
 
 # ---------------------------------------------------------------------------
