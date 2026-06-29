@@ -8,10 +8,25 @@ Empty cells mean "not set".
 from __future__ import annotations
 
 import re
+import uuid as _uuid
 from dataclasses import dataclass, field
 
 # Reserved keys inside a seedN.resp cell; everything else is a canonical body field.
 _RESP_RESERVED = {"status", "format", "delay_ms", "raw"}
+
+_UUID_PATTERN = re.compile(r'\{\{uuid(?::([^}]+))?\}\}')
+
+
+def _interpolate(text: str, ctx: dict) -> str:
+    """Replace {{uuid}} with a fresh UUID4, {{uuid:name}} with a named UUID (same value reused within a case)."""
+    def _sub(m: re.Match) -> str:
+        name = m.group(1)
+        if name:
+            if name not in ctx:
+                ctx[name] = str(_uuid.uuid4())
+            return ctx[name]
+        return str(_uuid.uuid4())
+    return _UUID_PATTERN.sub(_sub, text)
 
 
 class ValidationError(Exception):
@@ -130,7 +145,8 @@ def _coerce(v: str):
 
 
 def parse_case(row: dict) -> Case:
-    g = lambda k: (row.get(k) or "").strip()
+    _ctx: dict = {}
+    g = lambda k: _interpolate((row.get(k) or "").strip(), _ctx)
 
     # seed groups, numbered contiguously from 1
     seeds: list[SeedGroup] = []
@@ -219,7 +235,8 @@ def parse_case_new(rows: list[dict]) -> Case:
     Every row (including the first) contributes one seed via the seed.* columns.
     """
     first = rows[0]
-    g = lambda k: (first.get(k) or "").strip()
+    _ctx: dict = {}
+    g = lambda k: _interpolate((first.get(k) or "").strip(), _ctx)
 
     # Rows sharing (method, path, scenario) define a multi-response SEQUENCE,
     # served in row order (matches the mock's seq_cursor model). Order of first
@@ -227,7 +244,7 @@ def parse_case_new(rows: list[dict]) -> Case:
     seeds: list[SeedGroup] = []
     by_key: dict[tuple, SeedGroup] = {}
     for i, row in enumerate(rows):
-        r = lambda k, _row=row: (_row.get(k) or "").strip()
+        r = lambda k, _row=row: _interpolate((_row.get(k) or "").strip(), _ctx)
         if not r("seed.path"):
             continue
         match_cell = r("seed.match")
