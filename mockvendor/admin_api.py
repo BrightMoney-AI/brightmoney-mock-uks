@@ -109,7 +109,8 @@ def calls(request):
     rows = [
         {"id": c.id, "method": c.request_method, "path": c.request_path,
          "status": c.response_status, "scenario": c.scenario.name if c.scenario else None,
-         "delay_applied_ms": c.delay_applied_ms, "created_at": c.created_at.isoformat()}
+         "response_body": c.response_body, "delay_applied_ms": c.delay_applied_ms,
+         "created_at": c.created_at.isoformat()}
         for c in qs
     ]
     # Convenience: per-path counts (used by the runner's `calls` assertions).

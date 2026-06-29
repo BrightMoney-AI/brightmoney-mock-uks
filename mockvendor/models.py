@@ -97,6 +97,7 @@ class CallLog(models.Model):
     request_path = models.CharField(max_length=255, db_index=True)
     request_body = models.TextField(blank=True)
     response_status = models.IntegerField()
+    response_body = models.TextField(blank=True)
     delay_applied_ms = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

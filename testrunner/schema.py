@@ -59,7 +59,12 @@ class SeedGroup:
     match_key: str
     match_value: str
     is_sequence: bool
-    resp: dict  # {status, format, delay_ms, raw, canonical:{...}}
+    responses: list  # ordered list of resp dicts {status, format, delay_ms, raw, canonical}
+
+    @property
+    def resp(self) -> dict:
+        """First response — back-compat for single-response validation/seeding."""
+        return self.responses[0] if self.responses else {}
 
 
 @dataclass
@@ -143,7 +148,7 @@ def parse_case(row: dict) -> Case:
             priority=int(g(f"seed{i}.priority") or 0),
             match_key=mk, match_value=mv,
             is_sequence=g(f"seed{i}.is_sequence").lower() in ("1", "true", "yes"),
-            resp=_resp_from_cell(g(f"seed{i}.resp")) if g(f"seed{i}.resp") else {},
+            responses=[_resp_from_cell(g(f"seed{i}.resp"))] if g(f"seed{i}.resp") else [],
         ))
         i += 1
 
@@ -199,6 +204,109 @@ def parse_case(row: dict) -> Case:
         db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
         calls=calls, notes=g("notes"), raw=row,
+    )
+
+
+def is_new_format(fieldnames: list[str]) -> bool:
+    """Detect new flat-seed format (seed.path) vs old numbered format (seed1.path)."""
+    return "seed.path" in fieldnames
+
+
+def parse_case_new(rows: list[dict]) -> Case:
+    """Parse a case from one or more rows using the new single seed.* column format.
+
+    The first row carries all metadata (call, repeat, resp, db, kafka, calls).
+    Every row (including the first) contributes one seed via the seed.* columns.
+    """
+    first = rows[0]
+    g = lambda k: (first.get(k) or "").strip()
+
+    # Rows sharing (method, path, scenario) define a multi-response SEQUENCE,
+    # served in row order (matches the mock's seq_cursor model). Order of first
+    # appearance is preserved.
+    seeds: list[SeedGroup] = []
+    by_key: dict[tuple, SeedGroup] = {}
+    for i, row in enumerate(rows):
+        r = lambda k, _row=row: (_row.get(k) or "").strip()
+        if not r("seed.path"):
+            continue
+        match_cell = r("seed.match")
+        mk, mv = "", ""
+        if match_cell:
+            mm = parse_map(match_cell)
+            if mm:
+                mk, mv = next(iter(mm.items()))
+        method = r("seed.method") or "POST"
+        key = (method, r("seed.path"), r("seed.scenario"))
+        resp = _resp_from_cell(r("seed.resp")) if r("seed.resp") else None
+        seq = r("seed.is_sequence").lower() in ("1", "true", "yes")
+        if key in by_key:
+            grp = by_key[key]
+            if resp is not None:
+                grp.responses.append(resp)
+            grp.is_sequence = True  # >1 row for same scenario => sequence
+            continue
+        grp = SeedGroup(
+            index=len(seeds) + 1,
+            path=r("seed.path"), method=method,
+            scenario=r("seed.scenario"),
+            priority=int(r("seed.priority") or 0),
+            match_key=mk, match_value=mv,
+            is_sequence=seq,
+            responses=[resp] if resp is not None else [],
+        )
+        by_key[key] = grp
+        seeds.append(grp)
+
+    body = {k[len("call.body."):]: _coerce(v.strip())
+            for k, v in first.items() if k.startswith("call.body.") and (v or "").strip()}
+    call = {
+        "method": g("call.method") or "POST",
+        "url": g("call.url"),
+        "headers": parse_map(g("call.headers")) if g("call.headers") else {},
+        "body": body,
+        "expect_status": int(g("call.expect_status")) if g("call.expect_status") else None,
+    }
+    repeat = {
+        "same_flow_id": int(g("repeat.same_flow_id") or 1),
+        "distinct_ids": int(g("repeat.distinct_ids") or 1),
+        "concurrent": int(g("repeat.concurrent") or 1),
+    }
+    resp = {
+        "status": int(g("resp.status")) if g("resp.status") else None,
+        "body": parse_map(g("resp.body")) if g("resp.body") else {},
+    }
+
+    db_checks: list[DbCheck] = []
+    j = 1
+    while g(f"db{j}.table"):
+        db_checks.append(DbCheck(
+            table=g(f"db{j}.table"),
+            where=parse_map(g(f"db{j}.where")) if g(f"db{j}.where") else {},
+            expect=parse_map(g(f"db{j}.expect")) if g(f"db{j}.expect") else {},
+        ))
+        j += 1
+
+    kafka_checks: list[KafkaCheck] = []
+    k = 1
+    while g(f"kafka{k}.topic"):
+        exp_cell = g(f"kafka{k}.expect")
+        expect: dict | str = "absent" if exp_cell == "absent" else parse_map(exp_cell)
+        kafka_checks.append(KafkaCheck(topic=g(f"kafka{k}.topic"), key=g(f"kafka{k}.key"), expect=expect))
+        k += 1
+
+    calls = {}
+    if g("calls"):
+        calls = {kk: int(vv) for kk, vv in parse_map(g("calls")).items()}
+
+    return Case(
+        case_id=g("case_id"), flow_id=g("flow_id") or g("case_id"),
+        tags=split_escaped(g("tags")) if g("tags") else [],
+        client_context=g("client_context"),
+        seeds=seeds, call=call, repeat=repeat, resp=resp,
+        db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
+        kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
+        calls=calls, notes=g("notes"), raw=first,
     )
 
 

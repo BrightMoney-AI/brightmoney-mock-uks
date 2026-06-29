@@ -10,6 +10,8 @@ import requests
 def _expect_match(actual, expected: str) -> bool:
     if expected == "not_null":
         return actual is not None and actual != ""
+    if expected == "null":
+        return actual is None
     if len(expected) >= 2 and expected.startswith("/") and expected.endswith("/"):
         return actual is not None and re.search(expected[1:-1], str(actual)) is not None
     return str(actual) == expected
@@ -88,12 +90,13 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
 # ---------------------------------------------------------------------------
 # CallLog reader (via the mock admin API)
 # ---------------------------------------------------------------------------
-def verify_calls(mock_base: str, expected: dict) -> list[str]:
+def verify_calls(mock_base: str, expected: dict, baseline: dict | None = None) -> list[str]:
     resp = requests.get(mock_base.rstrip("/") + "/mock/admin/calls", timeout=10)
     counts = resp.json().get("counts", {})
+    baseline = baseline or {}
     errs: list[str] = []
     for path, want in expected.items():
-        got = counts.get(path, 0)
+        got = counts.get(path, 0) - baseline.get(path, 0)
         if got != want:
             errs.append(f"calls: {path} expected {want}, got {got}")
     return errs

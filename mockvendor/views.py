@@ -58,11 +58,7 @@ def serve(request, *args, **kwargs):
 
     resp = sel.response
 
-    # 4) delay engine
-    if resp.delay_ms:
-        time.sleep(resp.delay_ms / 1000.0)
-
-    # 5) serialize (raw_override wins for byte-exact / malformed payloads)
+    # 4) Serialize BEFORE the delay so we have the response body for the log.
     fmt_name = _target_format(resp, request.headers.get("Accept", ""))
     if resp.raw_override:
         payload = resp.raw_override.encode("utf-8")
@@ -75,16 +71,23 @@ def serve(request, *args, **kwargs):
         payload = serializer.serialize(resp.canonical or {}, {})
         content_type = serializer.content_type
 
-    # 6) build response + CallLog
-    http = HttpResponse(payload, status=resp.status_code, content_type=content_type)
-    for k, v in (resp.headers or {}).items():
-        http[k] = v
-
+    # 5) Log before the delay so timed-out calls are still visible in the log.
     CallLog.objects.create(
         endpoint=sel.endpoint, scenario=sel.scenario, request_method=method,
         request_path=path, request_body=_safe(raw_body),
-        response_status=resp.status_code, delay_applied_ms=resp.delay_ms,
+        response_status=resp.status_code,
+        response_body=_safe(payload),
+        delay_applied_ms=resp.delay_ms,
     )
+
+    # 6) Delay engine — client may time out here, but call is already logged.
+    if resp.delay_ms:
+        time.sleep(resp.delay_ms / 1000.0)
+
+    # 7) Build and return HTTP response.
+    http = HttpResponse(payload, status=resp.status_code, content_type=content_type)
+    for k, v in (resp.headers or {}).items():
+        http[k] = v
     return http
 
 
