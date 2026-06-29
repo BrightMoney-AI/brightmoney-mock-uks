@@ -169,7 +169,7 @@ def parse_case(row: dict) -> Case:
         i += 1
 
     # call.body.* columns
-    body = {k[len("call.body."):]: _coerce(v.strip())
+    body = {k[len("call.body."):]: _coerce(_interpolate(v.strip(), _ctx))
             for k, v in row.items() if k.startswith("call.body.") and (v or "").strip()}
     call = {
         "method": g("call.method") or "POST",
@@ -275,7 +275,7 @@ def parse_case_new(rows: list[dict]) -> Case:
         by_key[key] = grp
         seeds.append(grp)
 
-    body = {k[len("call.body."):]: _coerce(v.strip())
+    body = {k[len("call.body."):]: _coerce(_interpolate(v.strip(), _ctx))
             for k, v in first.items() if k.startswith("call.body.") and (v or "").strip()}
     call = {
         "method": g("call.method") or "POST",
