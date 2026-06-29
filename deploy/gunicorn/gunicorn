@@ -1,6 +1,6 @@
 #!/bin/bash
 NAME="mock_vendor"
-DIR=/app/deploy/current/vendor-mock-framework
+DIR=/app/deploy/current/brightmoney-mock-uks
 USER=bright_tech
 GROUP=bright_tech
 WORKERS=4
