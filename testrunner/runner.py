@@ -32,6 +32,22 @@ def _one_response(src: dict) -> dict:
     return resp
 
 
+def _dig(payload, dotted_key: str):
+    """Resolve a dotted key against a nested JSON payload: 'error.error_code'.
+
+    Falls back to a flat lookup when the literal key exists (e.g. 'flow_id').
+    """
+    if isinstance(payload, dict) and dotted_key in payload:
+        return payload[dotted_key]
+    cur = payload
+    for part in dotted_key.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
 def _unflatten(flat: dict) -> dict:
     """Expand dot-separated keys into nested dicts: {'a.b': v} -> {'a': {'b': v}}."""
     out = {}
@@ -117,8 +133,8 @@ class Runner:
             except ValueError:
                 payload = {}
             for k, v in case.resp["body"].items():
-                if not verifiers._expect_match(payload.get(k), v):
-                    errs.append(f"resp.body.{k} expected {v!r}, got {payload.get(k)!r}")
+                if not verifiers._expect_match(_dig(payload, k), v):
+                    errs.append(f"resp.body.{k} expected {v!r}, got {_dig(payload, k)!r}")
 
         for chk in case.db_checks:
             if self.aut_sqlite:
