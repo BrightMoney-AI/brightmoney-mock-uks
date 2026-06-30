@@ -137,6 +137,8 @@ def _coerce_key(k: str) -> str:
 
 
 def _coerce(v: str):
+    if len(v) >= 2 and v[0] == "'" and v[-1] == "'":
+        return v[1:-1]  # single-quoted → force string, no coercion
     low = v.lower()
     if low in ("true", "false"):
         return low == "true"
