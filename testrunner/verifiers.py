@@ -166,7 +166,10 @@ def verify_calls(mock_base: str, expected: dict, baseline: dict | None = None,
         errs = []
         for path, want in expected.items():
             got = counts.get(path, 0) - baseline.get(path, 0)
-            if got != want:
+            if isinstance(want, str) and want.startswith(">="):
+                if got < int(want[2:]):
+                    errs.append(f"calls: {path} expected {want}, got {got}")
+            elif got != want:
                 errs.append(f"calls: {path} expected {want}, got {got}")
         if not errs or time.monotonic() >= deadline:
             return errs

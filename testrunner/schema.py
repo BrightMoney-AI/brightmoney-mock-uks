@@ -233,7 +233,8 @@ def parse_case(row: dict) -> Case:
 
     calls = {}
     if g("calls"):
-        calls = {kk: int(vv) for kk, vv in parse_map(g("calls")).items()}
+        for kk, vv in parse_map(g("calls")).items():
+            calls[kk] = vv if vv.startswith(">=") else int(vv)
 
     return Case(
         case_id=g("case_id"), flow_id=g("flow_id") or g("case_id"),
@@ -339,7 +340,8 @@ def parse_case_new(rows: list[dict]) -> Case:
 
     calls = {}
     if g("calls"):
-        calls = {kk: int(vv) for kk, vv in parse_map(g("calls")).items()}
+        for kk, vv in parse_map(g("calls")).items():
+            calls[kk] = vv if vv.startswith(">=") else int(vv)
 
     return Case(
         case_id=g("case_id"), flow_id=g("flow_id") or g("case_id"),
