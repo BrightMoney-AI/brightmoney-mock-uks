@@ -119,7 +119,7 @@ class Runner:
 
     def drive(self, case: schema.Case) -> requests.Response:
         rep = case.repeat
-        last = None
+        chosen = None
         for n in range(rep["distinct_ids"]):
             fid = case.flow_id if rep["distinct_ids"] == 1 else f"{case.flow_id}-{n}"
             # same_flow_id replays + concurrency bombardment
@@ -128,11 +128,19 @@ class Runner:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=rep["concurrent"]) as ex:
                     futs = [ex.submit(self._drive_once, case, fid) for _ in range(rep["concurrent"])]
                     for f in concurrent.futures.as_completed(futs):
-                        last = f.result()
+                        resp = f.result()
+                        if chosen is None or (
+                            resp.status_code == 200 and chosen.status_code != 200
+                        ):
+                            chosen = resp
             else:
                 for _ in range(total):
-                    last = self._drive_once(case, fid)
-        return last
+                    resp = self._drive_once(case, fid)
+                    if chosen is None or (
+                        resp.status_code == 200 and chosen.status_code != 200
+                    ):
+                        chosen = resp
+        return chosen
 
     # --- evaluate ---
     def evaluate(self, case: schema.Case, response: requests.Response,
@@ -235,6 +243,7 @@ class Runner:
             if step.get("expect_status") and step_resp.status_code != step["expect_status"]:
                 return CaseResult(case.case_id, passed=False,
                                   errors=[f"call step {step['url']}: expected {step['expect_status']}, got {step_resp.status_code}"])
+            response = step_resp
         if case.db_delay_ms:
             print(f"[verify] waiting {case.db_delay_ms} ms before DB/call verification...")
             time.sleep(case.db_delay_ms / 1000)
