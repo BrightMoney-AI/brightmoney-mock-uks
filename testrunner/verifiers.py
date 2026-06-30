@@ -76,46 +76,58 @@ def cleanup_db_postgres(dsn: str, database: str, table: str, where: dict) -> Non
 # ---------------------------------------------------------------------------
 # Database verifier
 # ---------------------------------------------------------------------------
-def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict) -> list[str]:
-    errs: list[str] = []
-    con = sqlite3.connect(sqlite_path)
-    con.row_factory = sqlite3.Row
-    try:
-        clause, params = _build_clause(table, where, "?")
-        rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", params).fetchall()
-        if not rows:
-            return [f"db: no row in {table} where {where}"]
-        row = rows[0]
-        for col, exp in expect.items():
-            actual = row[col] if col in row.keys() else None
-            if not _expect_match(actual, exp):
-                errs.append(f"db: {table}.{col} expected {exp!r}, got {actual!r}")
-    finally:
-        con.close()
-    return errs
+def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict,
+                     timeout_s: float = 20.0, poll_interval_s: float = 2.0) -> list[str]:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        errs: list[str] = []
+        con = sqlite3.connect(sqlite_path)
+        con.row_factory = sqlite3.Row
+        try:
+            clause, params = _build_clause(table, where, "?")
+            rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", params).fetchall()
+            if not rows:
+                errs = [f"db: no row in {table} where {where}"]
+            else:
+                row = rows[0]
+                for col, exp in expect.items():
+                    actual = row[col] if col in row.keys() else None
+                    if not _expect_match(actual, exp):
+                        errs.append(f"db: {table}.{col} expected {exp!r}, got {actual!r}")
+        finally:
+            con.close()
+        if not errs or time.monotonic() >= deadline:
+            return errs
+        time.sleep(poll_interval_s)
 
 
-def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect: dict) -> list[str]:
+def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect: dict,
+                       timeout_s: float = 20.0, poll_interval_s: float = 2.0) -> list[str]:
     try:
         import psycopg  # type: ignore
     except ImportError:
         return ["db: psycopg not installed — install 'psycopg[binary]' or use --aut-sqlite"]
     host, _, port = dsn.partition(":")
-    errs: list[str] = []
-    with psycopg.connect(host=host, port=port or 5432, dbname=database,
-                         user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD")) as con:  # pragma: no cover
-        with con.cursor() as cur:
-            clause, params = _build_clause(table, where, "%s")
-            cur.execute(f"SELECT * FROM {table} WHERE {clause}", params)
-            cols = [d.name for d in cur.description]
-            r = cur.fetchone()
-            if not r:
-                return [f"db: no row in {table} where {where}"]
-            row = dict(zip(cols, r))
-            for col, exp in expect.items():
-                if not _expect_match(row.get(col), exp):
-                    errs.append(f"db: {table}.{col} expected {exp!r}, got {row.get(col)!r}")
-    return errs
+    deadline = time.monotonic() + timeout_s
+    while True:
+        errs: list[str] = []
+        with psycopg.connect(host=host, port=port or 5432, dbname=database,
+                             user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD")) as con:  # pragma: no cover
+            with con.cursor() as cur:
+                clause, params = _build_clause(table, where, "%s")
+                cur.execute(f"SELECT * FROM {table} WHERE {clause}", params)
+                cols = [d.name for d in cur.description]
+                r = cur.fetchone()
+                if not r:
+                    errs = [f"db: no row in {table} where {where}"]
+                else:
+                    row = dict(zip(cols, r))
+                    for col, exp in expect.items():
+                        if not _expect_match(row.get(col), exp):
+                            errs.append(f"db: {table}.{col} expected {exp!r}, got {row.get(col)!r}")
+        if not errs or time.monotonic() >= deadline:
+            return errs
+        time.sleep(poll_interval_s)
 
 
 # ---------------------------------------------------------------------------
