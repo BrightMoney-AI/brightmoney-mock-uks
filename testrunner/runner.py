@@ -112,6 +112,8 @@ class Runner:
         )
         flat[flow_id_key] = flow_id
         body = _unflatten(flat)
+        print(f"[call] {case.call['method']} {case.call['url']}")
+        print(f"[call] payload: {body}")
         return requests.request(case.call["method"], case.call["url"],
                                 json=body, headers=case.call["headers"], timeout=30)
 
@@ -221,9 +223,12 @@ class Runner:
         for step in case.call_steps:
             if step.get("delay_ms"):
                 time.sleep(step["delay_ms"] / 1000)
+            step_body = _unflatten(step["body"])
+            print(f"[call_step] {step['method']} {step['url']}")
+            print(f"[call_step] payload: {step_body}")
             step_resp = requests.request(
                 step["method"], step["url"],
-                json=_unflatten(step["body"]),
+                json=step_body,
                 headers=step["headers"],
                 timeout=30,
             )
