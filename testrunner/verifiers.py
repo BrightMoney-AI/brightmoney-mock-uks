@@ -1,6 +1,7 @@
 """Verification surfaces (design §6.3, §11.4): AUT database, Kafka, mock CallLog."""
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import time
@@ -37,7 +38,8 @@ def cleanup_db_postgres(dsn: str, database: str, table: str, where: dict) -> Non
     except ImportError:
         return
     host, _, port = dsn.partition(":")
-    with psycopg.connect(host=host, port=port or 5432, dbname=database) as con:  # pragma: no cover
+    with psycopg.connect(host=host, port=port or 5432, dbname=database,
+                         user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD")) as con:  # pragma: no cover
         with con.cursor() as cur:
             clause = " AND ".join(f"{k}=%s" for k in where) or "TRUE"
             cur.execute(f"DELETE FROM {table} WHERE {clause}", tuple(where.values()))
@@ -73,7 +75,8 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
         return ["db: psycopg not installed — install 'psycopg[binary]' or use --aut-sqlite"]
     host, _, port = dsn.partition(":")
     errs: list[str] = []
-    with psycopg.connect(host=host, port=port or 5432, dbname=database) as con:  # pragma: no cover
+    with psycopg.connect(host=host, port=port or 5432, dbname=database,
+                         user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD")) as con:  # pragma: no cover
         with con.cursor() as cur:
             clause = " AND ".join(f"{k}=%s" for k in where) or "TRUE"
             cur.execute(f"SELECT * FROM {table} WHERE {clause}", tuple(where.values()))
