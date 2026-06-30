@@ -64,6 +64,36 @@ def parse_map(cell: str) -> dict:
     return result
 
 
+def parse_calls_cell(cell: str) -> dict:
+    """Parse ``calls`` column; values may be exact counts (``1``) or minimums (``>=1``)."""
+    result: dict = {}
+    for pair in split_escaped(cell):
+        pair = pair.strip()
+        m = re.match(r"^(.+)>=(\d+)$", pair)
+        if m:
+            result[m.group(1).strip()] = f">={m.group(2)}"
+            continue
+        m = re.match(r"^(.+)=(\d+)$", pair)
+        if not m:
+            raise ValidationError(f"calls pair invalid: {pair!r}")
+        result[m.group(1).strip()] = int(m.group(2))
+    return result
+
+
+def _parse_db_checks(g) -> list[DbCheck]:
+    """Parse db1..db10 checks; empty slots (e.g. db2 blank, db3 set) are skipped."""
+    db_checks: list[DbCheck] = []
+    for j in range(1, 11):
+        if not g(f"db{j}.table"):
+            continue
+        db_checks.append(DbCheck(
+            table=g(f"db{j}.table"),
+            where=parse_map(g(f"db{j}.where")) if g(f"db{j}.where") else {},
+            expect=parse_map(g(f"db{j}.expect")) if g(f"db{j}.expect") else {},
+        ))
+    return db_checks
+
+
 @dataclass
 class SeedGroup:
     index: int
@@ -153,7 +183,7 @@ def _parse_extra_calls(first: dict, g, _ctx: dict) -> list:
     steps = []
     for n in range(2, 10):
         if not g(f"call{n}.url"):
-            break
+            continue
         body = {k[len(f"call{n}.body."):]: _coerce(_interpolate(v.strip(), _ctx))
                 for k, v in first.items() if k.startswith(f"call{n}.body.") and (v or "").strip()}
         steps.append({
@@ -211,16 +241,7 @@ def parse_case(row: dict) -> Case:
         "body": parse_map(g("resp.body")) if g("resp.body") else {},
     }
 
-    # dbN.* checks
-    db_checks: list[DbCheck] = []
-    j = 1
-    while g(f"db{j}.table"):
-        db_checks.append(DbCheck(
-            table=g(f"db{j}.table"),
-            where=parse_map(g(f"db{j}.where")) if g(f"db{j}.where") else {},
-            expect=parse_map(g(f"db{j}.expect")) if g(f"db{j}.expect") else {},
-        ))
-        j += 1
+    db_checks = _parse_db_checks(g)
 
     # kafkaN.* checks
     kafka_checks: list[KafkaCheck] = []
@@ -231,10 +252,7 @@ def parse_case(row: dict) -> Case:
         kafka_checks.append(KafkaCheck(topic=g(f"kafka{k}.topic"), key=g(f"kafka{k}.key"), expect=expect))
         k += 1
 
-    calls = {}
-    if g("calls"):
-        for kk, vv in parse_map(g("calls")).items():
-            calls[kk] = vv if vv.startswith(">=") else int(vv)
+    calls = parse_calls_cell(g("calls")) if g("calls") else {}
 
     return Case(
         case_id=g("case_id"), flow_id=g("flow_id") or g("case_id"),
@@ -320,15 +338,7 @@ def parse_case_new(rows: list[dict]) -> Case:
         "body": parse_map(g("resp.body")) if g("resp.body") else {},
     }
 
-    db_checks: list[DbCheck] = []
-    j = 1
-    while g(f"db{j}.table"):
-        db_checks.append(DbCheck(
-            table=g(f"db{j}.table"),
-            where=parse_map(g(f"db{j}.where")) if g(f"db{j}.where") else {},
-            expect=parse_map(g(f"db{j}.expect")) if g(f"db{j}.expect") else {},
-        ))
-        j += 1
+    db_checks = _parse_db_checks(g)
 
     kafka_checks: list[KafkaCheck] = []
     k = 1
@@ -338,10 +348,7 @@ def parse_case_new(rows: list[dict]) -> Case:
         kafka_checks.append(KafkaCheck(topic=g(f"kafka{k}.topic"), key=g(f"kafka{k}.key"), expect=expect))
         k += 1
 
-    calls = {}
-    if g("calls"):
-        for kk, vv in parse_map(g("calls")).items():
-            calls[kk] = vv if vv.startswith(">=") else int(vv)
+    calls = parse_calls_cell(g("calls")) if g("calls") else {}
 
     return Case(
         case_id=g("case_id"), flow_id=g("flow_id") or g("case_id"),

@@ -55,7 +55,40 @@ def test_raw_and_body_conflict_flagged():
     assert any("raw OR body" in e for e in schema.validate(c))
 
 
-def test_shared_endpoint_needs_disambiguation():
+def test_parse_calls_cell_exact_and_minimum():
+    assert schema.parse_calls_cell("/vendor/idology/verify=1") == {"/vendor/idology/verify": 1}
+    assert schema.parse_calls_cell("/api/v1/inquiries>=1;/vendor/idology/verify>=2") == {
+        "/api/v1/inquiries": ">=1",
+        "/vendor/idology/verify": ">=2",
+    }
+
+
+def test_call_steps_skip_empty_call2():
+    row = _base_row(
+        **{
+            "call2.url": "",
+            "call3.url": "http://aut/resume",
+            "call3.method": "POST",
+            "call3.body.flow_id": "C1",
+        }
+    )
+    c = schema.parse_case(row)
+    assert len(c.call_steps) == 1
+    assert c.call_steps[0]["url"] == "http://aut/resume"
+
+
+def test_db_checks_skip_empty_db2_slot():
+    row = _base_row(
+        **{
+            "db2.table": "",
+            "db3.table": "escalation_log",
+            "db3.where": "flow_id=C1",
+            "db3.expect": "status=SAME_INPUT",
+        }
+    )
+    c = schema.parse_case(row)
+    assert [x.table for x in c.db_checks] == ["enrollment", "escalation_log"]
+
     row = _base_row()
     row.update({"seed2.path": "/vendor/idology/verify", "seed2.scenario": "dup",
                 "seed2.match": "", "seed2.resp": "status=200;summary_result=FAIL"})
