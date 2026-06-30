@@ -19,14 +19,41 @@ def _expect_match(actual, expected: str) -> bool:
     return str(actual) == expected
 
 
+# Flow-scoped UKS tables have no ``flow_id`` column — they key off ``kyc_flow_id``
+# (FK to uks_kyc_flow) or ``step_pid``. A ``flow_id=`` filter on these is rewritten
+# into the right sub-select so cases can be written uniformly with flow_id.
+_FLOW_JOIN = {
+    "uks_flow_decision_step": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    "uks_user_profile": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    "uks_kyc_data_fetch": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    "escalation_log": ("step_pid IN (SELECT pid FROM uks_flow_decision_step WHERE "
+                       "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph}))"),
+}
+
+
+def _build_clause(table: str, where: dict, ph: str) -> tuple[str, list]:
+    """Build a WHERE clause + ordered params, rewriting ``flow_id`` on flow-scoped
+    tables into a join sub-select. ``ph`` is the placeholder: ``?`` (sqlite) / ``%s`` (pg)."""
+    if not where:
+        return ("1=1" if ph == "?" else "TRUE"), []
+    parts, params = [], []
+    for k, v in where.items():
+        if k == "flow_id" and table in _FLOW_JOIN:
+            parts.append(_FLOW_JOIN[table].format(ph=ph))
+        else:
+            parts.append(f"{k}={ph}")
+        params.append(v)
+    return " AND ".join(parts), params
+
+
 # ---------------------------------------------------------------------------
 # Database cleanup (pre-test teardown of leftover AUT rows)
 # ---------------------------------------------------------------------------
 def cleanup_db_sqlite(sqlite_path: str, table: str, where: dict) -> None:
     con = sqlite3.connect(sqlite_path)
     try:
-        clause = " AND ".join(f"{k}=?" for k in where) or "1=1"
-        con.execute(f"DELETE FROM {table} WHERE {clause}", tuple(where.values()))
+        clause, params = _build_clause(table, where, "?")
+        con.execute(f"DELETE FROM {table} WHERE {clause}", params)
         con.commit()
     finally:
         con.close()
@@ -41,8 +68,8 @@ def cleanup_db_postgres(dsn: str, database: str, table: str, where: dict) -> Non
     with psycopg.connect(host=host, port=port or 5432, dbname=database,
                          user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD")) as con:  # pragma: no cover
         with con.cursor() as cur:
-            clause = " AND ".join(f"{k}=%s" for k in where) or "TRUE"
-            cur.execute(f"DELETE FROM {table} WHERE {clause}", tuple(where.values()))
+            clause, params = _build_clause(table, where, "%s")
+            cur.execute(f"DELETE FROM {table} WHERE {clause}", params)
         con.commit()
 
 
@@ -54,8 +81,8 @@ def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict) ->
     con = sqlite3.connect(sqlite_path)
     con.row_factory = sqlite3.Row
     try:
-        clause = " AND ".join(f"{k}=?" for k in where) or "1=1"
-        rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", tuple(where.values())).fetchall()
+        clause, params = _build_clause(table, where, "?")
+        rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", params).fetchall()
         if not rows:
             return [f"db: no row in {table} where {where}"]
         row = rows[0]
@@ -78,8 +105,8 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
     with psycopg.connect(host=host, port=port or 5432, dbname=database,
                          user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD")) as con:  # pragma: no cover
         with con.cursor() as cur:
-            clause = " AND ".join(f"{k}=%s" for k in where) or "TRUE"
-            cur.execute(f"SELECT * FROM {table} WHERE {clause}", tuple(where.values()))
+            clause, params = _build_clause(table, where, "%s")
+            cur.execute(f"SELECT * FROM {table} WHERE {clause}", params)
             cols = [d.name for d in cur.description]
             r = cur.fetchone()
             if not r:
