@@ -381,8 +381,7 @@ def validate(case: Case) -> list[str]:
         if len(grp) > 1 and not all(s.match_key or s.priority for s in grp):
             errs.append(f"endpoint {path}: multiple seed groups need match or priority")
 
-    if case.db_checks and not case.db_host:
-        errs.append("db.host is required when any dbN.* is present")
+    # db.host may be omitted when DB_HOST env var is set (runner falls back to it)
     if case.kafka_checks and not case.kafka_bootstrap:
         errs.append("kafka.bootstrap is required when any kafkaN.* is present")
     return errs

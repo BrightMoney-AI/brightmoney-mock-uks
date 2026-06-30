@@ -3,12 +3,23 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import os
 import time
 from dataclasses import dataclass, field
 
 import requests
 
 from . import schema, verifiers
+
+
+def _aut_db_host() -> str:
+    host = os.getenv("DB_HOST", "")
+    port = os.getenv("DB_PORT", "5432")
+    return f"{host}:{port}" if host else ""
+
+
+def _aut_db_name() -> str:
+    return os.getenv("AUT_DB_NAME", "")
 
 
 @dataclass
@@ -140,8 +151,10 @@ class Runner:
             if self.aut_sqlite:
                 errs += verifiers.verify_db_sqlite(self.aut_sqlite, chk.table, chk.where, chk.expect)
             else:
-                errs += verifiers.verify_db_postgres(case.db_host, case.db_database,
-                                                     chk.table, chk.where, chk.expect)
+                errs += verifiers.verify_db_postgres(
+                    case.db_host or _aut_db_host(),
+                    case.db_database or _aut_db_name(),
+                    chk.table, chk.where, chk.expect)
 
         if case.calls:
             errs += verifiers.verify_calls(self.mock_base, case.calls, baseline=call_baseline)
@@ -174,9 +187,11 @@ class Runner:
             for w in wheres:
                 if self.aut_sqlite:
                     verifiers.cleanup_db_sqlite(self.aut_sqlite, chk.table, w)
-                elif case.db_host:
-                    verifiers.cleanup_db_postgres(case.db_host, case.db_database,
-                                                  chk.table, w)
+                elif case.db_host or _aut_db_host():
+                    verifiers.cleanup_db_postgres(
+                        case.db_host or _aut_db_host(),
+                        case.db_database or _aut_db_name(),
+                        chk.table, w)
 
     # --- call log snapshot ---
     def _get_call_counts(self) -> dict:
