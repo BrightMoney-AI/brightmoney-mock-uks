@@ -23,11 +23,13 @@ def _expect_match(actual, expected: str) -> bool:
 # (FK to uks_kyc_flow) or ``step_pid``. A ``flow_id=`` filter on these is rewritten
 # into the right sub-select so cases can be written uniformly with flow_id.
 _FLOW_JOIN = {
-    "uks_kyc_flow": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
-    "uks_user_profile": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
-    "uks_kyc_data_fetch": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
-    "escalation_log": ("step_pid IN (SELECT pid FROM uks_kyc_flow WHERE "
-                       "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph}))"),
+    "uks_flow_decision_step": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    "uks_user_profile":       "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    "uks_kyc_data_fetch":     "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    "escalation_log": (
+        "step_pid IN (SELECT pid FROM uks_flow_decision_step "
+        "WHERE kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph}))"
+    ),
 }
 
 
