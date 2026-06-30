@@ -113,6 +113,7 @@ class Case:
     kafka_checks: list[KafkaCheck]
     calls: dict  # {path: count}
     call_steps: list = field(default_factory=list)  # [{method,url,headers,body,expect_status,delay_ms}]
+    db_delay_ms: int = 0  # ms to wait before DB/call-count verification (avoids race conditions)
     notes: str = ""
     raw: dict = field(default_factory=dict)
 
@@ -242,6 +243,7 @@ def parse_case(row: dict) -> Case:
         db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
         calls=calls, call_steps=_parse_extra_calls(row, g, _ctx),
+        db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
         notes=g("notes"), raw=row,
     )
 
@@ -347,6 +349,7 @@ def parse_case_new(rows: list[dict]) -> Case:
         db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
         calls=calls, call_steps=_parse_extra_calls(first, g, _ctx),
+        db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
         notes=g("notes"), raw=first,
     )
 

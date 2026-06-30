@@ -235,6 +235,9 @@ class Runner:
             if step.get("expect_status") and step_resp.status_code != step["expect_status"]:
                 return CaseResult(case.case_id, passed=False,
                                   errors=[f"call step {step['url']}: expected {step['expect_status']}, got {step_resp.status_code}"])
+        if case.db_delay_ms:
+            print(f"[verify] waiting {case.db_delay_ms} ms before DB/call verification...")
+            time.sleep(case.db_delay_ms / 1000)
         errors = self.evaluate(case, response, call_baseline=baseline)
         return CaseResult(case.case_id, passed=not errors, errors=errors)
 
