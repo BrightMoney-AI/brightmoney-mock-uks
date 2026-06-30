@@ -76,6 +76,25 @@ def cleanup_db_postgres(dsn: str, database: str, table: str, where: dict) -> Non
 # ---------------------------------------------------------------------------
 # Database verifier
 # ---------------------------------------------------------------------------
+def _any_row_matches(rows: list, expect: dict) -> tuple[bool, list[str]]:
+    """Return (matched, last_row_errors). Succeeds if ANY row satisfies all expectations.
+
+    Tables like uks_flow_decision_step have multiple rows per flow (PENDING → PASSED).
+    Checking only fetchone() returns the first-inserted row (PENDING), not the final one.
+    """
+    last_errs: list[str] = []
+    for row in rows:
+        errs = []
+        for col, exp in expect.items():
+            actual = row.get(col)
+            if not _expect_match(actual, exp):
+                errs.append(f"db: col {col} expected {exp!r}, got {actual!r}")
+        if not errs:
+            return True, []
+        last_errs = errs
+    return False, last_errs
+
+
 def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict,
                      timeout_s: float = 20.0, poll_interval_s: float = 2.0) -> list[str]:
     deadline = time.monotonic() + timeout_s
@@ -85,15 +104,14 @@ def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict,
         con.row_factory = sqlite3.Row
         try:
             clause, params = _build_clause(table, where, "?")
-            rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", params).fetchall()
-            if not rows:
+            raw_rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", params).fetchall()
+            if not raw_rows:
                 errs = [f"db: no row in {table} where {where}"]
             else:
-                row = rows[0]
-                for col, exp in expect.items():
-                    actual = row[col] if col in row.keys() else None
-                    if not _expect_match(actual, exp):
-                        errs.append(f"db: {table}.{col} expected {exp!r}, got {actual!r}")
+                rows = [dict(zip(r.keys(), tuple(r))) for r in raw_rows]
+                matched, errs = _any_row_matches(rows, expect)
+                if not matched:
+                    errs = [e.replace("col ", f"{table}.") for e in errs]
         finally:
             con.close()
         if not errs or time.monotonic() >= deadline:
@@ -117,14 +135,14 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
                 clause, params = _build_clause(table, where, "%s")
                 cur.execute(f"SELECT * FROM {table} WHERE {clause}", params)
                 cols = [d.name for d in cur.description]
-                r = cur.fetchone()
-                if not r:
+                raw_rows = cur.fetchall()
+                if not raw_rows:
                     errs = [f"db: no row in {table} where {where}"]
                 else:
-                    row = dict(zip(cols, r))
-                    for col, exp in expect.items():
-                        if not _expect_match(row.get(col), exp):
-                            errs.append(f"db: {table}.{col} expected {exp!r}, got {row.get(col)!r}")
+                    rows = [dict(zip(cols, r)) for r in raw_rows]
+                    matched, errs = _any_row_matches(rows, expect)
+                    if not matched:
+                        errs = [e.replace("col ", f"{table}.") for e in errs]
         if not errs or time.monotonic() >= deadline:
             return errs
         time.sleep(poll_interval_s)
