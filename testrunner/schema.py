@@ -112,6 +112,7 @@ class Case:
     kafka_bootstrap: str
     kafka_checks: list[KafkaCheck]
     calls: dict  # {path: count}
+    call_steps: list = field(default_factory=list)  # [{method,url,headers,body,expect_status,delay_ms}]
     notes: str = ""
     raw: dict = field(default_factory=dict)
 
@@ -142,6 +143,25 @@ def _coerce(v: str):
     if re.fullmatch(r"-?\d+", v):
         return int(v)
     return v
+
+
+def _parse_extra_calls(first: dict, g, _ctx: dict) -> list:
+    """Parse call2.*, call3.*, … into sequential call steps."""
+    steps = []
+    for n in range(2, 10):
+        if not g(f"call{n}.url"):
+            break
+        body = {k[len(f"call{n}.body."):]: _coerce(_interpolate(v.strip(), _ctx))
+                for k, v in first.items() if k.startswith(f"call{n}.body.") and (v or "").strip()}
+        steps.append({
+            "method": g(f"call{n}.method") or "POST",
+            "url": g(f"call{n}.url"),
+            "headers": parse_map(g(f"call{n}.headers")) if g(f"call{n}.headers") else {},
+            "body": body,
+            "expect_status": int(g(f"call{n}.expect_status")) if g(f"call{n}.expect_status") else None,
+            "delay_ms": int(g(f"call{n}.delay_ms")) if g(f"call{n}.delay_ms") else 0,
+        })
+    return steps
 
 
 def parse_case(row: dict) -> Case:
@@ -219,7 +239,8 @@ def parse_case(row: dict) -> Case:
         seeds=seeds, call=call, repeat=repeat, resp=resp,
         db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
-        calls=calls, notes=g("notes"), raw=row,
+        calls=calls, call_steps=_parse_extra_calls(row, g, _ctx),
+        notes=g("notes"), raw=row,
     )
 
 
@@ -323,7 +344,8 @@ def parse_case_new(rows: list[dict]) -> Case:
         seeds=seeds, call=call, repeat=repeat, resp=resp,
         db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
-        calls=calls, notes=g("notes"), raw=first,
+        calls=calls, call_steps=_parse_extra_calls(first, g, _ctx),
+        notes=g("notes"), raw=first,
     )
 
 

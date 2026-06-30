@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import time
 from dataclasses import dataclass, field
 
 import requests
@@ -186,6 +187,18 @@ class Runner:
         baseline = self._get_call_counts()
         self.seed(case)
         response = self.drive(case)
+        for step in case.call_steps:
+            if step.get("delay_ms"):
+                time.sleep(step["delay_ms"] / 1000)
+            step_resp = requests.request(
+                step["method"], step["url"],
+                json=_unflatten(step["body"]),
+                headers=step["headers"],
+                timeout=30,
+            )
+            if step.get("expect_status") and step_resp.status_code != step["expect_status"]:
+                return CaseResult(case.case_id, passed=False,
+                                  errors=[f"call step {step['url']}: expected {step['expect_status']}, got {step_resp.status_code}"])
         errors = self.evaluate(case, response, call_baseline=baseline)
         return CaseResult(case.case_id, passed=not errors, errors=errors)
 
