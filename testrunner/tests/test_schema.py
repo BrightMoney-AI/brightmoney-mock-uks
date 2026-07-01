@@ -61,6 +61,9 @@ def test_parse_calls_cell_exact_and_minimum():
         "/api/v1/inquiries": ">=1",
         "/vendor/idology/verify": ">=2",
     }
+    assert schema.parse_calls_cell(
+        "/vendor/idology/verify=1;/LN.WebServices/api/OAuth2/Token=1;/LN.WebServices/api/Lists/Search=1"
+    ) == {"/vendor/idology/verify": 1, "/LN.WebServices/api/Lists/Search": 1}
 
 
 def test_call_steps_skip_empty_call2():

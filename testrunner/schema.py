@@ -65,18 +65,29 @@ def parse_map(cell: str) -> dict:
 
 
 def parse_calls_cell(cell: str) -> dict:
-    """Parse ``calls`` column; values may be exact counts (``1``) or minimums (``>=1``)."""
+    """Parse ``calls`` column; values may be exact counts (``1``) or minimums (``>=1``).
+
+    LN OAuth token fetches are cached by UKS and must not be asserted — drop them
+    if present so stale CSV rows cannot fail on ``expected 1, got 0``.
+    """
+    _SKIP_CALL_PATHS = ("/LN.WebServices/api/OAuth2/Token",)
     result: dict = {}
     for pair in split_escaped(cell):
         pair = pair.strip()
         m = re.match(r"^(.+)>=(\d+)$", pair)
         if m:
-            result[m.group(1).strip()] = f">={m.group(2)}"
+            path = m.group(1).strip()
+            if path in _SKIP_CALL_PATHS:
+                continue
+            result[path] = f">={m.group(2)}"
             continue
         m = re.match(r"^(.+)=(\d+)$", pair)
         if not m:
             raise ValidationError(f"calls pair invalid: {pair!r}")
-        result[m.group(1).strip()] = int(m.group(2))
+        path = m.group(1).strip()
+        if path in _SKIP_CALL_PATHS:
+            continue
+        result[path] = int(m.group(2))
     return result
 
 
