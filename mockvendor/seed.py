@@ -16,7 +16,7 @@ import json
 
 from django.db import transaction
 
-from .models import CallLog, Endpoint, Format, Response, Scenario
+from .models import CallLog, Endpoint, Format, Response, Scenario, ScenarioBundle
 
 DEFAULT_FORMATS = {
     "json": ("application/json", "mockvendor.serializers_fmt.JsonSerializer"),
@@ -101,6 +101,32 @@ def reset_scenarios(run_id: str = "") -> dict:
     n_sc = sc.count()
     sc.delete()
     return {"scenarios_deleted": n_sc}
+
+
+# --- scenario bundles: register a group once, replay it by id --------------
+def register_bundle(bundle_id: str, definitions: list[dict], run_id: str = "") -> ScenarioBundle:
+    """Persist ``definitions`` (a list of seed_scenario_dict-shaped payloads)
+    under ``bundle_id`` and seed them immediately. Re-registering the same
+    bundle_id overwrites the stored definition (idempotent, like ``_upsert``)."""
+    bundle, _ = ScenarioBundle.objects.update_or_create(
+        bundle_id=bundle_id, defaults={"definition": definitions, "run_id": run_id},
+    )
+    for payload in definitions:
+        seed_scenario_dict(payload, run_id=run_id or payload.get("run_id", ""))
+    return bundle
+
+
+def implement_bundle(bundle_id: str, run_id: str = "") -> dict:
+    """Clear active scenarios (never CallLog) then replay a registered bundle."""
+    try:
+        bundle = ScenarioBundle.objects.get(bundle_id=bundle_id)
+    except ScenarioBundle.DoesNotExist:
+        raise ValueError(f"no scenario bundle registered under id={bundle_id!r}")
+    effective_run_id = run_id or bundle.run_id
+    reset_scenarios(run_id=effective_run_id)
+    created = [seed_scenario_dict(p, run_id=effective_run_id or p.get("run_id", ""))
+               for p in bundle.definition]
+    return {"id": bundle_id, "scenarios_seeded": len(created)}
 
 
 # --- "scenario library" CSV for the management command ----------------------

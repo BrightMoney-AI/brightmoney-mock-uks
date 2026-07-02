@@ -9,7 +9,7 @@ import pytest
 from django.test import Client
 
 from mockvendor import seed
-from mockvendor.models import CallLog, Scenario
+from mockvendor.models import CallLog, Scenario, ScenarioBundle
 
 pytestmark = pytest.mark.django_db
 
@@ -130,3 +130,67 @@ def test_admin_calls_counts():
     c.post("/counted", data="{}", content_type="application/json")
     r = c.get("/mock/admin/calls")
     assert r.json()["counts"]["/counted"] == 2
+
+
+def _register(client, bundle_id, scenarios):
+    return client.post("/mock/admin/register",
+                       data=json.dumps({"id": bundle_id, "scenarios": scenarios}),
+                       content_type="application/json")
+
+
+def test_register_seeds_immediately_and_persists_definition():
+    c = Client()
+    r = _register(c, "ido-pass", [
+        {"path": "/vendor/idology/verify", "scenario": "idology-pass",
+         "responses": [{"status": 200, "canonical": {"summary_result": "PASS"}}]},
+        {"path": "/usm/user-profile", "scenario": "usm-default",
+         "responses": [{"status": 200, "canonical": {"bright_uid": "u1"}}]},
+    ])
+    assert r.status_code == 201
+    assert r.json() == {"id": "ido-pass", "scenarios_registered": 2}
+    assert Scenario.objects.filter(name="idology-pass").exists()
+    assert ScenarioBundle.objects.get(bundle_id="ido-pass").definition[0]["scenario"] == "idology-pass"
+
+
+def test_register_requires_id_and_scenarios():
+    c = Client()
+    r = c.post("/mock/admin/register", data=json.dumps({"id": "x"}), content_type="application/json")
+    assert r.status_code == 400
+
+
+def test_implement_clears_scenarios_never_calllog_then_replays_bundle():
+    c = Client()
+    _register(c, "ln-fail", [
+        {"path": "/LN.WebServices/api/Lists/Search", "scenario": "ln-ssn",
+         "responses": [{"status": 200, "canonical": {"result": "FAIL_SSN"}}]},
+    ])
+    # A scenario seeded outside the bundle, plus a logged call — reset/implement
+    # must drop the former but must never touch CallLog.
+    _seed(path="/unrelated", scenario="stray", responses=[{"status": 200, "canonical": {}}])
+    c.post("/unrelated", data="{}", content_type="application/json")
+    calllog_before = CallLog.objects.count()
+
+    r = c.post("/mock/admin/implement", data=json.dumps({"id": "ln-fail"}), content_type="application/json")
+    assert r.status_code == 200
+    assert r.json() == {"id": "ln-fail", "scenarios_seeded": 1}
+    assert not Scenario.objects.filter(name="stray").exists()
+    assert Scenario.objects.filter(name="ln-ssn").exists()
+    assert CallLog.objects.count() == calllog_before  # never cleared
+
+
+def test_implement_unknown_id_404():
+    c = Client()
+    r = c.post("/mock/admin/implement", data=json.dumps({"id": "nope"}), content_type="application/json")
+    assert r.status_code == 404
+
+
+def test_register_overwrite_and_delete():
+    c = Client()
+    _register(c, "reuse", [{"path": "/a", "scenario": "v1", "responses": [{"status": 200}]}])
+    _register(c, "reuse", [{"path": "/a", "scenario": "v2", "responses": [{"status": 200}]}])
+    bundle = ScenarioBundle.objects.get(bundle_id="reuse")
+    assert len(bundle.definition) == 1 and bundle.definition[0]["scenario"] == "v2"
+
+    r = c.delete("/mock/admin/register/reuse")
+    assert r.status_code == 204
+    assert not ScenarioBundle.objects.filter(bundle_id="reuse").exists()

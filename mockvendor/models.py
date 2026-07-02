@@ -88,6 +88,27 @@ class Response(models.Model):
         return f"resp<{self.scenario.name}#{self.seq_index}>={self.status_code}"
 
 
+class ScenarioBundle(models.Model):
+    """A named, reusable group of scenario definitions (design §8: quick re-seed presets).
+
+    ``POST /mock/admin/register`` saves the definition under ``bundle_id`` and
+    seeds it immediately; ``POST /mock/admin/implement`` clears active scenarios
+    (never CallLog — same guarantee as ``reset_scenarios``) and replays it.
+    """
+
+    bundle_id = models.CharField(max_length=120, unique=True)
+    definition = models.JSONField()  # list of scenario payload dicts (seed.seed_scenario_dict shape)
+    run_id = models.CharField(max_length=120, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    modified_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mockvendor_scenariobundle"
+
+    def __str__(self) -> str:
+        return self.bundle_id
+
+
 class CallLog(models.Model):
     """Append-only record of every received request (design §4.3)."""
 

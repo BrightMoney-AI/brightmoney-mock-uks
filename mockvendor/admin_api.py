@@ -5,6 +5,11 @@
   PUT    /mock/admin/scenarios/{id}  update (enable/disable, priority)
   DELETE /mock/admin/scenarios/{id}  remove a scenario
   POST   /mock/admin/reset           clear scenarios + CallLog (isolation)
+  POST   /mock/admin/reset/scenarios clear scenarios only; CallLog preserved
+  POST   /mock/admin/register        save + seed a named group of scenarios ({"id","scenarios":[...]})
+  GET    /mock/admin/register        list registered scenario bundles
+  DELETE /mock/admin/register/{id}   remove a registered bundle
+  POST   /mock/admin/implement       reset scenarios (never CallLog), replay a bundle by {"id"}
   GET    /mock/admin/calls           query CallLog for assertions
   GET    /mock/admin/formats         list registered serializers
 
@@ -19,7 +24,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response as DrfResponse
 
 from . import seed as seed_mod
-from .models import CallLog, Scenario
+from .models import CallLog, Scenario, ScenarioBundle
 from .serializers_fmt import registry
 
 
@@ -96,6 +101,60 @@ def reset_scenarios(request):
         return _forbidden()
     run_id = request.data.get("run_id", "") if isinstance(request.data, dict) else ""
     return DrfResponse(seed_mod.reset_scenarios(run_id=run_id))
+
+
+def _bundle_json(b: ScenarioBundle) -> dict:
+    return {"id": b.bundle_id, "scenarios": len(b.definition), "run_id": b.run_id,
+            "modified_at": b.modified_at.isoformat()}
+
+
+@api_view(["GET", "POST"])
+def register(request):
+    """POST: save a named group of scenario definitions and seed them immediately.
+
+    Body: {"id": "<bundle_id>", "scenarios": [<seed_scenario_dict payload>, ...], "run_id"?: str}
+    Re-registering the same id overwrites the stored definition.
+    """
+    if not _enabled():
+        return _forbidden()
+    if request.method == "GET":
+        return DrfResponse({"bundles": [_bundle_json(b) for b in ScenarioBundle.objects.all()]})
+    bundle_id = request.data.get("id")
+    definitions = request.data.get("scenarios")
+    if not bundle_id or not isinstance(definitions, list) or not definitions:
+        return DrfResponse({"error": "body must be {'id': str, 'scenarios': [...]}"},
+                           status=status.HTTP_400_BAD_REQUEST)
+    run_id = request.data.get("run_id", "")
+    bundle = seed_mod.register_bundle(bundle_id, definitions, run_id=run_id)
+    return DrfResponse({"id": bundle.bundle_id, "scenarios_registered": len(definitions)},
+                       status=status.HTTP_201_CREATED)
+
+
+@api_view(["DELETE"])
+def register_detail(request, bundle_id: str):
+    if not _enabled():
+        return _forbidden()
+    deleted, _ = ScenarioBundle.objects.filter(bundle_id=bundle_id).delete()
+    if not deleted:
+        return DrfResponse({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+    return DrfResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["POST"])
+def implement(request):
+    """Clear active scenarios (CallLog is NEVER touched) then replay a registered
+    bundle by id. Body: {"id": "<bundle_id>", "run_id"?: str}."""
+    if not _enabled():
+        return _forbidden()
+    bundle_id = request.data.get("id")
+    if not bundle_id:
+        return DrfResponse({"error": "body must be {'id': str}"}, status=status.HTTP_400_BAD_REQUEST)
+    run_id = request.data.get("run_id", "")
+    try:
+        result = seed_mod.implement_bundle(bundle_id, run_id=run_id)
+    except ValueError as exc:
+        return DrfResponse({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    return DrfResponse(result)
 
 
 @api_view(["GET"])
