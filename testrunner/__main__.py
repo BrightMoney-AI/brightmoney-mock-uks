@@ -8,8 +8,10 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from datetime import datetime
 
 from . import runner, schema
 
@@ -52,14 +54,43 @@ def main(argv=None) -> int:
 
     run = runner.Runner(args.mock_base, aut_sqlite=args.aut_sqlite, enable_kafka=args.enable_kafka)
     passed = 0
+    failing: list[dict] = []
     for c in cases:
         res = run.run_case(c)
         if res.passed:
             passed += 1
+        else:
+            failing.append({"case_id": c.case_id, "errors": res.errors})
         status = "PASS" if res.passed else "FAIL"
         print(f"[{status}] {c.case_id}" + (f"  -> {'; '.join(res.errors)}" if res.errors else ""))
     print(f"\n{passed}/{len(cases)} cases passed.")
+
+    result_path = _write_results(args.cases_csv, len(cases), passed, failing)
+    print(f"Results written to {result_path}")
+
     return 1 if passed != len(cases) else 0
+
+
+def _write_results(cases_csv: str, total: int, passed: int, failing: list[dict]) -> str:
+    """Write a pass/fail summary for this run to results/<csv_name>_<ddmmyyyy_HHMM>.json."""
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+
+    csv_name = os.path.splitext(os.path.basename(cases_csv))[0]
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M")
+    result_path = os.path.join(results_dir, f"{csv_name}_{timestamp}.json")
+
+    payload = {
+        "cases_csv": cases_csv,
+        "run_at": datetime.now().isoformat(),
+        "total": total,
+        "passed": passed,
+        "failed": total - passed,
+        "failing_cases": failing,
+    }
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return result_path
 
 
 if __name__ == "__main__":
