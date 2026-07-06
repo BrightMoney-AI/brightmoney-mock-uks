@@ -512,7 +512,7 @@ async function runSuite(){
 function gotoRunsAndOpen(id){ document.querySelector('nav button[data-tab="tests"]').click(); OPEN_RUN=id; setTimeout(()=>{loadRuns();viewRun(id);},200); }
 
 // ---- structured case editor ----
-const BLANK_CASE=()=>({case_id:"",flow_id:"flow-{{uuid:flow}}",tags:[],notes:"",
+const BLANK_CASE=()=>({case_id:"",flow_id:"flow-{{uuid:flow}}",id_key:"flow_id",tags:[],notes:"",
   seeds:[{method:"POST",path:"/vendor/idology/verify",scenario:"idology-pass",priority:5,match_key:"",match_value:"",is_sequence:false,
     responses:[{status:200,format:"xml",delay_ms:0,raw:'<?xml version="1.0"?><response><summary-result><key>id.success</key></summary-result></response>'}]}],
   call:{method:"POST",url:"http://10.0.63.105/api/v1/kyc/start",headers:{"Content-Type":"application/json"},body:{"meta.bright_uid":"{{uuid:uid}}","data.flow_id":"flow-{{uuid:flow}}","data.kyc_type":"DM"},expect_status:200},
@@ -537,9 +537,9 @@ function renderCaseEditor(){
   // meta
   const cid=el("input",{value:d.case_id||""}), suite=el("input",{value:EDIT_SUITE||""}),
         flow=el("input",{value:d.flow_id||""}), tags=el("input",{value:(d.tags||[]).join(", ")}),
-        notes=el("textarea",{rows:2}); notes.value=d.notes||"";
-  body.append(el("div",{class:"grid3"},[mk("case_id",cid),mk("suite",suite),mk("flow_id",flow)]));
-  body.append(el("div",{class:"grid2"},[mk("tags (comma)",tags),mk("notes",notes)]));
+        idkey=el("input",{value:d.id_key||"flow_id"}), notes=el("textarea",{rows:2}); notes.value=d.notes||"";
+  body.append(el("div",{class:"grid3"},[mk("case_id",cid),mk("suite",suite),mk("identity value",flow,"per-run id injected into the call body (templated, e.g. flow-{{uuid:flow}})")]));
+  body.append(el("div",{class:"grid3"},[mk("identity key (id_key)",idkey,"body field that carries the id — UKS uses flow_id; blank = none"),mk("tags (comma)",tags),mk("notes",notes)]));
 
   // seeds
   body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Seeds — what the mock returns to the AUT"));
@@ -596,7 +596,7 @@ function renderCaseEditor(){
     const parse=(t,fb)=>{try{return JSON.parse(t.value);}catch{return fb;}};
     // sync seed cards already updated d.seeds via their listeners
     return {
-      case_id:cid.value.trim(), flow_id:flow.value.trim(),
+      case_id:cid.value.trim(), flow_id:flow.value.trim(), id_key:idkey.value.trim(),
       tags:tags.value.split(",").map(x=>x.trim()).filter(Boolean), notes:notes.value,
       seeds:d.seeds||[],
       call:{method:cm.value,url:curl.value.trim(),headers:parse(chd,{}),body:parse(cbody,{}),expect_status:ces.value?Number(ces.value):null},

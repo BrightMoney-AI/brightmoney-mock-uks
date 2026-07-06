@@ -140,7 +140,7 @@ class KafkaCheck:
 @dataclass
 class Case:
     case_id: str
-    flow_id: str
+    flow_id: str  # correlation/idempotency VALUE (historically the UKS flow id)
     tags: list[str]
     client_context: str
     seeds: list[SeedGroup]
@@ -156,6 +156,10 @@ class Case:
     call_steps: list = field(default_factory=list)  # [{method,url,headers,body,expect_status,delay_ms}]
     db_delay_ms: int = 0  # ms to wait before DB/call-count verification (avoids race conditions)
     notes: str = ""
+    # Body path of the correlation/idempotency id the runner injects + replays +
+    # cleans by. Default "flow_id" (UKS); set to your AUT's key (e.g. "order_id")
+    # or "" to disable id injection entirely for AUTs that have no such concept.
+    id_key: str = "flow_id"
     raw: dict = field(default_factory=dict)
 
 
@@ -275,7 +279,7 @@ def parse_case(row: dict) -> Case:
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
         calls=calls, call_steps=_parse_extra_calls(row, g, _ctx),
         db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
-        notes=g("notes"), raw=row,
+        notes=g("notes"), id_key=g("id_key") or "flow_id", raw=row,
     )
 
 
@@ -376,7 +380,7 @@ def parse_case_new(rows: list[dict], interpolate: bool = True) -> Case:
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
         calls=calls, call_steps=_parse_extra_calls(first, g, _ctx, interp=interpolate),
         db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
-        notes=g("notes"), raw=first,
+        notes=g("notes"), id_key=g("id_key") or "flow_id", raw=first,
     )
 
 
@@ -386,6 +390,7 @@ def case_to_dict(case: Case) -> dict:
     return {
         "case_id": case.case_id,
         "flow_id": case.flow_id,
+        "id_key": case.id_key,
         "tags": case.tags,
         "notes": case.notes,
         "client_context": case.client_context,
@@ -476,7 +481,9 @@ def case_from_dict(definition: dict, interpolate: bool = True) -> Case:
         calls={deep(k): v for k, v in (definition.get("calls", {}) or {}).items()},
         call_steps=[deep(s) for s in (definition.get("call_steps") or [])],
         db_delay_ms=int(db.get("delay_ms", 0) or 0),
-        notes=definition.get("notes", ""), raw=definition,
+        notes=definition.get("notes", ""),
+        id_key=definition.get("id_key", "flow_id") or "flow_id",
+        raw=definition,
     )
 
 

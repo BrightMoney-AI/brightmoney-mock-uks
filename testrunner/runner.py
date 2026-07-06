@@ -104,13 +104,17 @@ class Runner:
             r.raise_for_status()
 
     # --- drive ---
-    def _drive_once(self, case: schema.Case, flow_id: str) -> requests.Response:
+    def _drive_once(self, case: schema.Case, corr_value: str) -> requests.Response:
         flat = dict(case.call["body"])
-        # Inject runtime flow_id into whichever key holds it (top-level or nested e.g. data.flow_id)
-        flow_id_key = next(
-            (k for k in flat if k == "flow_id" or k.endswith(".flow_id")), "flow_id"
-        )
-        flat[flow_id_key] = flow_id
+        # Inject the runtime correlation id into whichever body key holds it
+        # (top-level or nested, e.g. data.flow_id). The key is configurable via
+        # case.id_key (default "flow_id" for UKS); id_key="" disables injection.
+        # Only overwrite a slot the case actually declares — never fabricate one,
+        # so AUTs without this concept aren't sent a spurious field.
+        if case.id_key:
+            key = next((k for k in flat if k == case.id_key or k.endswith("." + case.id_key)), None)
+            if key is not None:
+                flat[key] = corr_value
         body = _unflatten(flat)
         print(f"[call] {case.call['method']} {case.call['url']}")
         print(f"[call] payload: {body}")
@@ -187,12 +191,13 @@ class Runner:
             if not chk.where:
                 continue
             wheres = [chk.where]
-            # For distinct_ids > 1 the runner generates {case.flow_id}-0 …
-            # {case.flow_id}-N-1; clean all of them regardless of what the
-            # db_check's where clause says.
-            if rep["distinct_ids"] > 1 and "flow_id" in chk.where:
+            # For distinct_ids > 1 the runner generates {corr}-0 … {corr}-N-1;
+            # clean all of them regardless of what the db_check's where says.
+            # Keyed on case.id_key (the configurable correlation column, default
+            # "flow_id") so this is not UKS-specific.
+            if rep["distinct_ids"] > 1 and case.id_key and case.id_key in chk.where:
                 base = case.flow_id
-                wheres = [{**chk.where, "flow_id": f"{base}-{n}"}
+                wheres = [{**chk.where, case.id_key: f"{base}-{n}"}
                           for n in range(rep["distinct_ids"])]
             for w in wheres:
                 if self.aut_sqlite:
