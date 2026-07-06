@@ -30,6 +30,15 @@ def _target_format(response, accept_header: str) -> str:
     return response.scenario.endpoint.default_format.name
 
 
+def _client_ip(request) -> str:
+    """Caller IP for parallel-run isolation: first X-Forwarded-For hop (nginx
+    sets it, see deploy/nginx/mock_vendor.conf), else the direct peer."""
+    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return (request.META.get("REMOTE_ADDR") or "").strip()
+
+
 @csrf_exempt
 def serve(request, *args, **kwargs):
     method = request.method
@@ -38,13 +47,15 @@ def serve(request, *args, **kwargs):
     body = matcher.parse_body(raw_body)
     headers = {k[5:].replace("_", "-").title(): v for k, v in request.META.items() if k.startswith("HTTP_")}
     run_id = request.headers.get("X-Mock-Run-Id", "")
+    client_ip = _client_ip(request)
 
     try:
-        sel = matcher.select(method, path, headers, body, run_id=run_id)
+        sel = matcher.select(method, path, headers, body, run_id=run_id, client_ip=client_ip)
     except matcher.NoEndpoint:
         CallLog.objects.create(
             endpoint=None, scenario=None, request_method=method,
             request_path=path, request_body=_safe(raw_body), response_status=404,
+            request_ip=client_ip,
         )
         return HttpResponse(b'{"error":"no_endpoint"}', status=404,
                             content_type="application/json")
@@ -52,6 +63,7 @@ def serve(request, *args, **kwargs):
         CallLog.objects.create(
             endpoint=None, scenario=None, request_method=method,
             request_path=path, request_body=_safe(raw_body), response_status=404,
+            request_ip=client_ip,
         )
         return HttpResponse(b'{"error":"no_scenario"}', status=404,
                             content_type="application/json")
@@ -78,6 +90,7 @@ def serve(request, *args, **kwargs):
         response_status=resp.status_code,
         response_body=_safe(payload),
         delay_applied_ms=resp.delay_ms,
+        request_ip=client_ip, matched_run_id=sel.run_id,
     )
 
     # 6) Delay engine — client may time out here, but call is already logged.

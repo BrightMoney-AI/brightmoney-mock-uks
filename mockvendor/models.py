@@ -116,6 +116,11 @@ class CallLog(models.Model):
     scenario = models.ForeignKey(Scenario, null=True, on_delete=models.SET_NULL)
     request_method = models.CharField(max_length=10)
     request_path = models.CharField(max_length=255, db_index=True)
+    # Caller identity used for parallel-run scenario isolation (X-Forwarded-For
+    # first hop, else REMOTE_ADDR). "" when unknown. See matcher.select.
+    request_ip = models.CharField(max_length=64, blank=True, db_index=True)
+    # The run_id namespace the matched scenario belonged to ("" = default set).
+    matched_run_id = models.CharField(max_length=120, blank=True)
     request_body = models.TextField(blank=True)
     response_status = models.IntegerField()
     response_body = models.TextField(blank=True)

@@ -93,10 +93,18 @@ def reset(run_id: str = "") -> dict:
     return {"scenarios_deleted": n_sc, "calllog_deleted": n_cl}
 
 
-def reset_scenarios(run_id: str = "") -> dict:
-    """Clear only seeded Scenarios, leaving CallLog intact."""
+def reset_scenarios(run_id: str = "", all_runs: bool = False) -> dict:
+    """Clear seeded Scenarios, leaving CallLog intact.
+
+    Scope (parallel-run aware, see matcher.select):
+      * ``all_runs=True``  — every scenario in every namespace (explicit full wipe).
+      * ``run_id="<x>"``   — only that namespace (one host / one run).
+      * ``run_id=""``      — only the DEFAULT namespace. Wiping the shared default
+        set must not disturb another host's parallel per-IP scenarios, so this is
+        scoped rather than global.
+    """
     sc = Scenario.objects.all()
-    if run_id:
+    if not all_runs:
         sc = sc.filter(run_id=run_id)
     n_sc = sc.count()
     sc.delete()

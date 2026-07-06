@@ -18,10 +18,13 @@ both CSVs define TC-001..TC-026 against different vendor URL conventions
 in a single call, without touching CallLog.
 
 Usage:
-    python register_case_bundles.py register                       # register every case as a bundle
-    python register_case_bundles.py register data/kyc_cases.csv    # just one file
-    python register_case_bundles.py implement test_suite_full:ido-03  # swap mocks to that case
-    python register_case_bundles.py list                           # every bundle id available
+    python register_case_bundles.py register                          # register every case (parallel)
+    python register_case_bundles.py register data/kyc_cases.csv       # just one file
+    python register_case_bundles.py implement test_suite_full:ido-03  # swap default set to that case
+    python register_case_bundles.py implement test_suite_full:ido-03 10.0.0.5   # isolated to caller 10.0.0.5
+    python register_case_bundles.py implement-parallel \\
+        test_suite_full:ido-03=10.0.0.5 test_suite_full:tc-001=10.0.0.6   # many hosts at once
+    python register_case_bundles.py list                              # every bundle id available
 """
 from __future__ import annotations
 
@@ -144,17 +147,53 @@ def register_all(csv_paths: list[Path], max_workers: int = 16):
         print(f"  FAILED {bundle_id}: {status} {text[:200]}")
 
 
-def implement(bundle_id: str):
-    r = requests.post(f"{BASE}/implement", json={"id": bundle_id})
+def implement(bundle_id: str, run_id: str = ""):
+    """Swap the mock over to a bundle. run_id="" -> default set (any caller);
+    run_id=<caller IP/host> -> isolated set served only to that caller (parallel
+    runs don't collide — see mockvendor/matcher.select)."""
+    r = requests.post(f"{BASE}/implement", json={"id": bundle_id, "run_id": run_id})
     if r.status_code == 404:
         print(f"unknown bundle {bundle_id!r} (register first)")
         sys.exit(1)
     r.raise_for_status()
-    print(f"implemented {bundle_id!r}: {r.json()}")
-    active = requests.get(f"{BASE}/scenarios").json()
-    print("active scenarios now:")
+    print(f"implemented {bundle_id!r} into namespace {run_id or 'default'!r}: {r.json()}")
+    q = f"?run_id={run_id}" if run_id else ""
+    active = requests.get(f"{BASE}/scenarios{q}").json()
+    print(f"active scenarios in {run_id or 'default'!r} namespace:")
     for sc in active["scenarios"]:
-        print(f"  - {sc['endpoint']} -> {sc['name']}")
+        print(f"  - {sc['endpoint']} -> {sc['name']}  (run_id={sc['run_id']!r})")
+
+
+def implement_parallel(pairs: list[str], max_workers: int = 16):
+    """Implement many bundles into many namespaces at once, e.g.
+
+        python register_case_bundles.py implement-parallel \\
+            test_suite_full:ido-03=10.0.0.5 test_suite_full:tc-001=10.0.0.6
+
+    Each "bundle=run_id" pair is independent (implement_bundle scopes its reset
+    to that run_id), so parallel test hosts get isolated scenario sets in one shot.
+    Omit "=run_id" to target the default set.
+    """
+    jobs = []
+    for pair in pairs:
+        bundle_id, _, run_id = pair.partition("=")
+        jobs.append((bundle_id.strip(), run_id.strip()))
+
+    def _one(session, bundle_id, run_id):
+        r = session.post(f"{BASE}/implement", json={"id": bundle_id, "run_id": run_id}, timeout=60)
+        r.raise_for_status()
+        return bundle_id, run_id, r.json()
+
+    with requests.Session() as session, ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_one, session, b, r): (b, r) for b, r in jobs}
+        for future in as_completed(futures):
+            b, r = futures[future]
+            try:
+                _, _, res = future.result()
+                print(f"  ok  {b} -> {r or 'default'}: {res.get('scenarios_seeded')} scenarios")
+            except requests.HTTPError as exc:
+                print(f"  ERR {b} -> {r or 'default'}: {exc.response.status_code} {exc.response.text[:150]}")
+    print(f"done: {len(jobs)} implement(s) across {max_workers} workers")
 
 
 def list_bundles(csv_paths: list[Path]):
@@ -172,7 +211,9 @@ if __name__ == "__main__":
         csvs = [Path(a) for a in extra_args] if extra_args else DEFAULT_CSVS
         register_all(csvs)
     elif cmd == "implement":
-        implement(extra_args[0])
+        implement(extra_args[0], extra_args[1] if len(extra_args) > 1 else "")
+    elif cmd == "implement-parallel":
+        implement_parallel(extra_args)
     elif cmd == "list":
         csvs = [Path(a) for a in extra_args] if extra_args else DEFAULT_CSVS
         list_bundles(csvs)

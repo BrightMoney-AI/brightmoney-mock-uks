@@ -19,6 +19,7 @@ production (design §8.1).
 from __future__ import annotations
 
 from django.conf import settings
+from django.db.models import Count
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response as DrfResponse
@@ -96,11 +97,17 @@ def reset(request):
 
 @api_view(["POST"])
 def reset_scenarios(request):
-    """Clear only seeded Scenarios; CallLog is preserved for post-run inspection."""
+    """Clear seeded Scenarios; CallLog is preserved for post-run inspection.
+
+    Body (all optional): ``{"run_id": "<host/run>", "all": bool}``. ``run_id=""``
+    (default) clears only the default namespace; ``all=true`` wipes every
+    namespace across all hosts.
+    """
     if not _enabled():
         return _forbidden()
-    run_id = request.data.get("run_id", "") if isinstance(request.data, dict) else ""
-    return DrfResponse(seed_mod.reset_scenarios(run_id=run_id))
+    data = request.data if isinstance(request.data, dict) else {}
+    return DrfResponse(seed_mod.reset_scenarios(
+        run_id=data.get("run_id", ""), all_runs=bool(data.get("all", False))))
 
 
 def _bundle_json(b: ScenarioBundle) -> dict:
@@ -130,10 +137,18 @@ def register(request):
                        status=status.HTTP_201_CREATED)
 
 
-@api_view(["DELETE"])
+@api_view(["GET", "DELETE"])
 def register_detail(request, bundle_id: str):
     if not _enabled():
         return _forbidden()
+    if request.method == "GET":
+        try:
+            bundle = ScenarioBundle.objects.get(bundle_id=bundle_id)
+        except ScenarioBundle.DoesNotExist:
+            return DrfResponse({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return DrfResponse({"id": bundle.bundle_id, "run_id": bundle.run_id,
+                            "modified_at": bundle.modified_at.isoformat(),
+                            "scenarios": bundle.definition})
     deleted, _ = ScenarioBundle.objects.filter(bundle_id=bundle_id).delete()
     if not deleted:
         return DrfResponse({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -165,18 +180,31 @@ def calls(request):
     path = request.query_params.get("path")
     if path:
         qs = qs.filter(request_path=path)
+    ip = request.query_params.get("ip")
+    if ip is not None:
+        qs = qs.filter(request_ip=ip)
+    run_id = request.query_params.get("run_id")
+    if run_id is not None:
+        qs = qs.filter(matched_run_id=run_id)
+    # Newest first, capped so the dashboard/log view stays responsive on a DB
+    # that accumulates forever (CallLog is append-only, never reset).
+    try:
+        limit = min(int(request.query_params.get("limit", 200)), 2000)
+    except (TypeError, ValueError):
+        limit = 200
+    total = qs.count()
     rows = [
         {"id": c.id, "method": c.request_method, "path": c.request_path,
          "status": c.response_status, "scenario": c.scenario.name if c.scenario else None,
+         "ip": c.request_ip, "run_id": c.matched_run_id,
          "response_body": c.response_body, "delay_applied_ms": c.delay_applied_ms,
          "created_at": c.created_at.isoformat()}
-        for c in qs
+        for c in qs.order_by("-id")[:limit]
     ]
     # Convenience: per-path counts (used by the runner's `calls` assertions).
-    counts: dict[str, int] = {}
-    for c in qs:
-        counts[c.request_path] = counts.get(c.request_path, 0) + 1
-    return DrfResponse({"count": qs.count(), "counts": counts, "calls": rows})
+    counts = {row["request_path"]: row["n"]
+              for row in qs.values("request_path").annotate(n=Count("id"))}
+    return DrfResponse({"count": total, "counts": counts, "calls": rows})
 
 
 @api_view(["GET"])

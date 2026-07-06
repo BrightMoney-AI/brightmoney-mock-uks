@@ -59,10 +59,24 @@ class Selection:
     endpoint: Endpoint
     scenario: Scenario
     response: Response
+    run_id: str = ""  # the namespace the chosen scenario was found in ("" = default)
 
 
-def select(method: str, path: str, headers: dict, body: dict, run_id: str = "") -> Selection:
+def select(method: str, path: str, headers: dict, body: dict,
+           run_id: str = "", client_ip: str = "") -> Selection:
     """Find the endpoint, choose the scenario, resolve the response.
+
+    Scenario-set selection supports parallel runs sharing one mock server, keyed
+    by the caller. Precedence (first namespace that has any matching scenario for
+    this endpoint wins):
+
+      1. explicit ``X-Mock-Run-Id`` header (``run_id``) — strict, no fallback:
+         a caller that opts into a run expects only that run's scenarios.
+      2. the caller's IP/host (``client_ip``) — scenarios seeded for that IP.
+      3. the default namespace (``run_id == ""``) — the shared fallback set.
+
+    So parallel callers each get their own seeded scenarios (by IP), and any
+    caller with nothing IP-specific falls through to the default set.
 
     Raises ``NoEndpoint`` / ``NoScenario`` when nothing matches.
     """
@@ -71,10 +85,24 @@ def select(method: str, path: str, headers: dict, body: dict, run_id: str = "") 
     except Endpoint.DoesNotExist as exc:
         raise NoEndpoint(f"{method} {path}") from exc
 
-    qs = endpoint.scenarios.filter(enabled=True)
+    def _candidates(namespace: str) -> list[Scenario]:
+        qs = endpoint.scenarios.filter(enabled=True, run_id=namespace)
+        return [sc for sc in qs if _discriminator_matches(sc, body, headers)]
+
     if run_id:
-        qs = qs.filter(run_id=run_id)
-    candidates = [sc for sc in qs if _discriminator_matches(sc, body, headers)]
+        namespaces = [run_id]              # explicit opt-in: strict, no fallback
+    elif client_ip:
+        namespaces = [client_ip, ""]       # IP-specific, then default
+    else:
+        namespaces = [""]                  # default only
+
+    candidates: list[Scenario] = []
+    chosen_ns = ""
+    for ns in namespaces:
+        candidates = _candidates(ns)
+        if candidates:
+            chosen_ns = ns
+            break
     if not candidates:
         raise NoScenario(f"{method} {path}")
 
@@ -83,7 +111,7 @@ def select(method: str, path: str, headers: dict, body: dict, run_id: str = "") 
     candidates.sort(key=lambda s: (bool(s.match_key), s.priority, s.id), reverse=True)
     scenario = candidates[0]
     response = _resolve_response(scenario)
-    return Selection(endpoint=endpoint, scenario=scenario, response=response)
+    return Selection(endpoint=endpoint, scenario=scenario, response=response, run_id=chosen_ns)
 
 
 @transaction.atomic

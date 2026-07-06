@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mock Vendor · Dashboard</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
+    --fg:#e6e9ef; --muted:#9aa4b2; --accent:#4f8cff; --accent2:#22c55e;
+    --danger:#ef4444; --warn:#f59e0b; --chip:#232834; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#f4f6fa; --panel:#fff; --panel2:#f0f2f7; --border:#dde1e9;
+      --fg:#1a1d24; --muted:#5a6472; --chip:#eef1f6; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:20}
+  header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .badge{font:11px/1 var(--mono);color:var(--muted);background:var(--chip);border:1px solid var(--border);padding:5px 8px;border-radius:6px}
+  nav{display:flex;gap:4px;margin-left:8px}
+  nav button{background:none;border:0;color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+  nav button.active{background:var(--panel2);color:var(--fg)}
+  nav button:hover{color:var(--fg)}
+  .spacer{flex:1}
+  main{padding:20px;max-width:1400px;margin:0 auto}
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+  input,select,textarea,button{font-family:inherit;font-size:13px;color:var(--fg)}
+  input,select,textarea{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+  textarea{width:100%;font-family:var(--mono);font-size:12px;resize:vertical;line-height:1.45}
+  .btn{background:var(--accent);border:1px solid transparent;color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:600}
+  .btn:hover{filter:brightness(1.08)}
+  .btn.ghost{background:var(--panel2);color:var(--fg);border-color:var(--border)}
+  .btn.danger{background:var(--danger)}
+  .btn.warn{background:var(--warn);color:#3a2800}
+  .btn.sm{padding:5px 9px;font-size:12px;border-radius:6px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--panel)}
+  tr:last-child td{border-bottom:0}
+  tr:hover td{background:var(--panel2)}
+  code,.mono{font-family:var(--mono);font-size:12px}
+  .chip{display:inline-block;font:11px/1 var(--mono);background:var(--chip);border:1px solid var(--border);padding:3px 7px;border-radius:20px;color:var(--muted)}
+  .chip.run{color:var(--accent)}
+  .chip.default{color:var(--muted)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font:11px/1.6 var(--mono);font-weight:600}
+  .st2{background:rgba(34,197,94,.16);color:#22c55e}
+  .st4{background:rgba(245,158,11,.16);color:#f59e0b}
+  .st5{background:rgba(239,68,68,.16);color:#ef4444}
+  .muted{color:var(--muted)}
+  .right{text-align:right}
+  .nowrap{white-space:nowrap}
+  .truncate{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row-actions{display:flex;gap:6px;justify-content:flex-end}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+  .toast{position:fixed;right:20px;bottom:20px;z-index:60;display:flex;flex-direction:column;gap:8px}
+  .toast div{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);padding:11px 15px;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:420px;animation:slide .2s ease}
+  .toast div.ok{border-left-color:var(--accent2)} .toast div.err{border-left-color:var(--danger)}
+  @keyframes slide{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+  .modal-bg.open{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;width:min(760px,100%);max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .modal h2{margin:0;padding:16px 20px;border-bottom:1px solid var(--border);font-size:15px}
+  .modal .body{padding:20px;display:flex;flex-direction:column;gap:14px}
+  .modal .foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12px;color:var(--muted);font-weight:600}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .stat{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px}
+  .stat .b{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 16px;min-width:120px}
+  .stat .b .n{font-size:22px;font-weight:700} .stat .b .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .hint{font-size:12px;color:var(--muted)}
+  .scrollx{overflow-x:auto}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎭 Mock Vendor</h1>
+  <span class="badge" id="apihealth">…</span>
+  <nav>
+    <button data-tab="bundles" class="active">Bundles</button>
+    <button data-tab="scenarios">Scenarios</button>
+    <button data-tab="calls">Call Log</button>
+  </nav>
+  <div class="spacer"></div>
+  <button class="btn ghost sm" onclick="refresh()">↻ Refresh</button>
+</header>
+
+<main>
+  <!-- BUNDLES -->
+  <section data-panel="bundles">
+    <div class="toolbar">
+      <button class="btn" onclick="openBundleEditor()">+ Register bundle</button>
+      <input id="bundleFilter" placeholder="filter bundles…" oninput="renderBundles()" style="min-width:220px">
+      <span class="spacer"></span>
+      <span class="hint" id="bundleCount"></span>
+    </div>
+    <div class="card scrollx"><table id="bundleTable"></table></div>
+  </section>
+
+  <!-- SCENARIOS -->
+  <section data-panel="scenarios" hidden>
+    <div class="stat" id="scenarioStats"></div>
+    <div class="toolbar">
+      <button class="btn" onclick="openScenarioEditor()">+ New scenario</button>
+      <select id="scnRunFilter" onchange="loadScenarios()"><option value="__all">All namespaces</option></select>
+      <span class="spacer"></span>
+      <button class="btn ghost sm" onclick="resetScenarios('')">Clear default set</button>
+      <button class="btn warn sm" onclick="resetScenariosHost()">Clear host set…</button>
+      <button class="btn danger sm" onclick="resetScenarios(null,true)">Wipe ALL</button>
+    </div>
+    <div class="card scrollx"><table id="scnTable"></table></div>
+  </section>
+
+  <!-- CALL LOG -->
+  <section data-panel="calls" hidden>
+    <div class="toolbar">
+      <input id="clPath" placeholder="path filter (exact)" style="min-width:220px">
+      <input id="clIp" placeholder="caller ip" style="width:150px">
+      <input id="clRun" placeholder="run_id / host" style="width:150px">
+      <select id="clLimit"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>
+      <button class="btn sm" onclick="loadCalls()">Apply</button>
+      <label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="clAuto" style="width:auto" onchange="toggleAuto()"> auto-refresh 3s</label>
+      <span class="spacer"></span>
+      <span class="hint" id="callCount"></span>
+    </div>
+    <div class="grid2" style="align-items:start">
+      <div class="card scrollx"><table id="callTable"></table></div>
+      <div class="card scrollx"><table id="countTable"></table></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<!-- generic modal -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h2 id="modalTitle"></h2>
+    <div class="body" id="modalBody"></div>
+    <div class="foot" id="modalFoot"></div>
+  </div>
+</div>
+
+<script>
+const API = "/mock/admin";
+let AUTO = null;
+
+// ---- tiny helpers ----------------------------------------------------------
+async function api(path, opts={}){
+  const r = await fetch(API+path, {headers:{"Content-Type":"application/json"}, ...opts});
+  const txt = await r.text();
+  let data; try{ data = txt ? JSON.parse(txt) : null; }catch{ data = txt; }
+  if(!r.ok){ const e = new Error((data&&data.error)||("HTTP "+r.status)); e.status=r.status; e.data=data; throw e; }
+  return data;
+}
+const el = (tag,attrs={},kids=[])=>{const n=document.createElement(tag);
+  for(const k in attrs){ if(k==="html")n.innerHTML=attrs[k]; else if(k.startsWith("on"))n.addEventListener(k.slice(2),attrs[k]); else n.setAttribute(k,attrs[k]); }
+  for(const c of [].concat(kids)) n.append(c.nodeType?c:document.createTextNode(c)); return n;};
+const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function toast(msg, kind=""){ const t=el("div",{class:kind}); t.textContent=msg; document.getElementById("toast").append(t);
+  setTimeout(()=>{t.style.opacity=0;setTimeout(()=>t.remove(),200);},3200); }
+function runChip(rid){ return `<span class="chip ${rid?'run':'default'}">${rid?esc(rid):'default'}</span>`; }
+function statusPill(s){ const c = s>=500?'st5':s>=400?'st4':'st2'; return `<span class="pill ${c}">${s}</span>`; }
+
+// ---- tab switching ---------------------------------------------------------
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b));
+  const tab=b.dataset.tab;
+  document.querySelectorAll("section[data-panel]").forEach(s=>s.hidden = s.dataset.panel!==tab);
+  refresh();
+});
+function currentTab(){ return document.querySelector("nav button.active").dataset.tab; }
+function refresh(){ const t=currentTab();
+  if(t==="bundles") loadBundles();
+  else if(t==="scenarios") loadScenarios();
+  else loadCalls();
+}
+
+// ---- modal -----------------------------------------------------------------
+function closeModal(){ document.getElementById("modal").classList.remove("open"); }
+function openModal(title, bodyNodes, footNodes){
+  document.getElementById("modalTitle").textContent=title;
+  const b=document.getElementById("modalBody"); b.innerHTML=""; [].concat(bodyNodes).forEach(n=>b.append(n));
+  const f=document.getElementById("modalFoot"); f.innerHTML=""; [].concat(footNodes).forEach(n=>f.append(n));
+  document.getElementById("modal").classList.add("open");
+}
+document.getElementById("modal").addEventListener("click",e=>{ if(e.target.id==="modal") closeModal(); });
+
+// ============================ BUNDLES =======================================
+let BUNDLES=[];
+async function loadBundles(){
+  try{ BUNDLES=(await api("/register")).bundles||[]; renderBundles(); }
+  catch(e){ toast("bundles: "+e.message,"err"); }
+}
+function renderBundles(){
+  const q=(document.getElementById("bundleFilter").value||"").toLowerCase();
+  const rows=BUNDLES.filter(b=>b.id.toLowerCase().includes(q)).sort((a,b)=>a.id<b.id?-1:1);
+  document.getElementById("bundleCount").textContent=`${rows.length} / ${BUNDLES.length} bundles`;
+  const t=document.getElementById("bundleTable"); t.innerHTML="";
+  t.append(el("tr",{},[el("th",{},"Bundle id"),el("th",{},"Scenarios"),el("th",{},"Namespace"),el("th",{},"Modified"),el("th",{class:"right"},"Actions")]));
+  if(!rows.length){ t.append(el("tr",{},el("td",{colspan:5},el("div",{class:"empty"},"No bundles registered. Use the register scripts or “+ Register bundle”.")))); return; }
+  for(const b of rows){
+    const acts=el("div",{class:"row-actions"},[
+      el("button",{class:"btn sm",onclick:()=>implementBundle(b.id)},"Implement"),
+      el("button",{class:"btn ghost sm",onclick:()=>viewBundle(b.id)},"View / Edit"),
+      el("button",{class:"btn danger sm",onclick:()=>delBundle(b.id)},"✕"),
+    ]);
+    t.append(el("tr",{},[
+      el("td",{class:"mono"},b.id),
+      el("td",{},String(b.scenarios)),
+      el("td",{html:runChip(b.run_id)}),
+      el("td",{class:"muted nowrap"},(b.modified_at||"").replace("T"," ").slice(0,19)),
+      el("td",{},acts),
+    ]));
+  }
+}
+async function implementBundle(id){
+  const host=prompt(`Implement "${id}" into which namespace?\n\n· leave blank = default set (served to any caller with no per-host set)\n· enter a caller IP / run_id = isolated set for that host (parallel-safe)`,"");
+  if(host===null) return;
+  try{ const r=await api("/implement",{method:"POST",body:JSON.stringify({id,run_id:host.trim()})});
+    toast(`implemented ${id} → ${host.trim()||"default"} (${r.scenarios_seeded} scenarios)`,"ok");
+    if(currentTab()==="scenarios") loadScenarios();
+  }catch(e){ toast("implement: "+e.message,"err"); }
+}
+async function delBundle(id){ if(!confirm(`Delete bundle "${id}"? (does not touch seeded scenarios)`))return;
+  try{ await api("/register/"+encodeURIComponent(id),{method:"DELETE"}); toast("deleted "+id,"ok"); loadBundles(); }
+  catch(e){ toast("delete: "+e.message,"err"); } }
+async function viewBundle(id){
+  let def;
+  try{ def=(await api("/register/"+encodeURIComponent(id))).scenarios; }
+  catch(e){ toast("load: "+e.message,"err"); return; }
+  const ta=el("textarea",{rows:20}); ta.value=JSON.stringify(def,null,2);
+  openModal(`Bundle · ${id}`,
+    el("div",{class:"field"},[el("label",{},"scenarios[] definition (edit + Save re-registers)"),ta]),
+    [ el("button",{class:"btn ghost",onclick:closeModal},"Close"),
+      el("button",{class:"btn",onclick:async()=>{ let scn; try{scn=JSON.parse(ta.value);}catch(err){return toast("invalid JSON: "+err.message,"err");}
+        try{ await api("/register",{method:"POST",body:JSON.stringify({id,scenarios:scn})}); toast("re-registered "+id,"ok"); closeModal(); loadBundles(); }
+        catch(e){ toast("save: "+e.message,"err"); } }},"Save & re-register") ]);
+}
+function openBundleEditor(){
+  const idIn=el("input",{placeholder:"bundle id, e.g. my-case"});
+  const ta=el("textarea",{rows:16}); ta.value=JSON.stringify([{method:"POST",path:"/vendor/idology/verify",default_format:"xml",scenario:"idology-pass",priority:5,is_sequence:false,match_key:"",match_value:"",responses:[{status:200,format:"xml",raw:"<?xml version=\"1.0\"?><response><summary-result><key>id.success</key></summary-result></response>",delay_ms:0}]}],null,2);
+  openModal("Register new bundle",
+    [el("div",{class:"field"},[el("label",{},"bundle id"),idIn]),
+     el("div",{class:"field"},[el("label",{},"scenarios[] (seed_scenario_dict payloads)"),ta])],
+    [ el("button",{class:"btn ghost",onclick:closeModal},"Cancel"),
+      el("button",{class:"btn",onclick:async()=>{ const id=idIn.value.trim(); if(!id)return toast("id required","err");
+        let scn; try{scn=JSON.parse(ta.value);}catch(err){return toast("invalid JSON: "+err.message,"err");}
+        try{ await api("/register",{method:"POST",body:JSON.stringify({id,scenarios:scn})}); toast("registered "+id,"ok"); closeModal(); loadBundles(); }
+        catch(e){ toast("register: "+e.message,"err"); } }},"Register") ]);
+}
+
+// ============================ SCENARIOS =====================================
+let SCENARIOS=[];
+async function loadScenarios(){
+  const sel=document.getElementById("scnRunFilter").value;
+  const qs = sel==="__all" ? "" : "?run_id="+encodeURIComponent(sel==="__default"?"":sel);
+  try{ SCENARIOS=(await api("/scenarios"+qs)).scenarios||[]; renderScenarios(); }
+  catch(e){ toast("scenarios: "+e.message,"err"); }
+}
+function renderScenarios(){
+  // namespace filter options (derive from current data + keep selection)
+  const ns=[...new Set(SCENARIOS.map(s=>s.run_id))];
+  const sel=document.getElementById("scnRunFilter"); const cur=sel.value;
+  sel.innerHTML=`<option value="__all">All namespaces</option><option value="__default">default (host: none)</option>`+
+    ns.filter(Boolean).sort().map(r=>`<option value="${esc(r)}">host: ${esc(r)}</option>`).join("");
+  if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
+
+  // stats
+  const byNs={}; SCENARIOS.forEach(s=>byNs[s.run_id||""]=(byNs[s.run_id||""]||0)+1);
+  const stat=document.getElementById("scenarioStats"); stat.innerHTML="";
+  stat.append(bstat(SCENARIOS.length,"active scenarios"));
+  stat.append(bstat(Object.keys(byNs).length,"namespaces"));
+  stat.append(bstat(byNs[""]||0,"default set"));
+  const hosts=Object.keys(byNs).filter(Boolean); if(hosts.length) stat.append(bstat(hosts.length,"per-host sets"));
+
+  const t=document.getElementById("scnTable"); t.innerHTML="";
+  t.append(el("tr",{},[el("th",{},"id"),el("th",{},"Endpoint"),el("th",{},"Scenario"),el("th",{},"Match"),
+    el("th",{},"Namespace"),el("th",{class:"right"},"Prio"),el("th",{},"Seq"),el("th",{},"On"),el("th",{},"Resp"),el("th",{class:"right"},"Actions")]));
+  if(!SCENARIOS.length){ t.append(el("tr",{},el("td",{colspan:10},el("div",{class:"empty"},"No active scenarios in this namespace. Implement a bundle or add one.")))); return; }
+  for(const s of SCENARIOS.sort((a,b)=>(a.endpoint+a.name)<(b.endpoint+b.name)?-1:1)){
+    const tog=el("input",{type:"checkbox"}); tog.checked=s.enabled; tog.onchange=()=>putScn(s.id,{enabled:tog.checked});
+    const acts=el("div",{class:"row-actions"},[
+      el("button",{class:"btn ghost sm",onclick:()=>openScenarioEditor(s)},"Edit"),
+      el("button",{class:"btn danger sm",onclick:()=>delScn(s)},"✕"),
+    ]);
+    t.append(el("tr",{},[
+      el("td",{class:"muted"},String(s.id)),
+      el("td",{class:"mono"},s.endpoint),
+      el("td",{},s.name),
+      el("td",{class:"mono muted"},s.match_key?`${s.match_key}=${s.match_value}`:"—"),
+      el("td",{html:runChip(s.run_id)}),
+      el("td",{class:"right"},String(s.priority)),
+      el("td",{},s.is_sequence?"↻ "+s.responses.length:"—"),
+      el("td",{},tog),
+      el("td",{class:"muted"},String((s.responses||[]).length)),
+      el("td",{},acts),
+    ]));
+  }
+}
+function bstat(n,l){ return el("div",{class:"b"},[el("div",{class:"n"},String(n)),el("div",{class:"l"},l)]); }
+async function putScn(id,patch){ try{ await api("/scenarios/"+id,{method:"PUT",body:JSON.stringify(patch)}); toast("updated #"+id,"ok"); }
+  catch(e){ toast("update: "+e.message,"err"); loadScenarios(); } }
+async function delScn(s){ if(!confirm(`Delete scenario "${s.name}" (${s.endpoint})?`))return;
+  try{ await api("/scenarios/"+s.id,{method:"DELETE"}); toast("deleted "+s.name,"ok"); loadScenarios(); }
+  catch(e){ toast("delete: "+e.message,"err"); } }
+
+function scnToPayload(s){
+  return {
+    method:(s.endpoint||"POST ").split(" ")[0],
+    path:(s.endpoint||"").split(" ").slice(1).join(" "),
+    default_format:(s.responses&&s.responses[0]&&s.responses[0].format)||"json",
+    scenario:s.name, priority:s.priority, is_sequence:s.is_sequence,
+    match_key:s.match_key||"", match_value:s.match_value||"", run_id:s.run_id||"",
+    responses:(s.responses||[]).map(r=>({status:r.status, format:r.format,
+      delay_ms:r.delay_ms||0, ...(r.raw_override?{raw:r.raw_override}:{canonical:r.canonical||{}})}))
+  };
+}
+function openScenarioEditor(existing){
+  const p = existing ? scnToPayload(existing) : {
+    method:"POST", path:"/vendor/idology/verify", default_format:"json", scenario:"", priority:5,
+    is_sequence:false, match_key:"", match_value:"", run_id:"",
+    responses:[{status:200, format:"json", delay_ms:0, canonical:{}}]
+  };
+  const f={};
+  const mk=(label,node)=>el("div",{class:"field"},[el("label",{},label),node]);
+  f.method=el("select",{},["POST","GET","PUT","DELETE","PATCH"].map(m=>el("option",{...(m===p.method?{selected:""}:{})},m)));
+  f.path=el("input",{value:p.path});
+  f.scenario=el("input",{value:p.scenario});
+  f.run_id=el("input",{value:p.run_id,placeholder:"blank = default; else caller IP / host"});
+  f.priority=el("input",{type:"number",value:p.priority});
+  f.format=el("select",{},["json","xml"].map(m=>el("option",{...(m===p.default_format?{selected:""}:{})},m)));
+  f.match_key=el("input",{value:p.match_key,placeholder:"$.test_path or $header.X-Foo"});
+  f.match_value=el("input",{value:p.match_value});
+  f.seq=el("input",{type:"checkbox"}); f.seq.checked=p.is_sequence;
+  const resp=el("textarea",{rows:12}); resp.value=JSON.stringify(p.responses,null,2);
+
+  const body=[
+    el("div",{class:"grid3"},[mk("method",f.method),mk("default format",f.format),mk("priority",f.priority)]),
+    mk("path",f.path),
+    el("div",{class:"grid2"},[mk("scenario name",f.scenario),mk("namespace (run_id / host)",f.run_id)]),
+    el("div",{class:"grid2"},[mk("match_key (discriminator)",f.match_key),mk("match_value",f.match_value)]),
+    el("label",{class:"hint",style:"display:flex;gap:6px;align-items:center"},[f.seq," is_sequence (serve responses in order, Nth-call)"]),
+    mk("responses[] — {status, format, delay_ms, raw | canonical}",resp),
+  ];
+  const save=el("button",{class:"btn",onclick:async()=>{
+    let responses; try{ responses=JSON.parse(resp.value); }catch(err){ return toast("responses JSON: "+err.message,"err"); }
+    const payload={ method:f.method.value, path:f.path.value.trim(), default_format:f.format.value,
+      scenario:f.scenario.value.trim(), priority:Number(f.priority.value)||0, is_sequence:f.seq.checked,
+      match_key:f.match_key.value.trim(), match_value:f.match_value.value.trim(),
+      run_id:f.run_id.value.trim(), responses };
+    if(!payload.path||!payload.scenario) return toast("path and scenario required","err");
+    try{
+      // rename/re-path or namespace change on an existing scenario => remove the old row first
+      if(existing && (existing.name!==payload.scenario || existing.endpoint!==(payload.method+" "+payload.path) || (existing.run_id||"")!==payload.run_id)){
+        await api("/scenarios/"+existing.id,{method:"DELETE"});
+      }
+      await api("/scenarios",{method:"POST",body:JSON.stringify(payload)});
+      toast((existing?"saved ":"created ")+payload.scenario,"ok"); closeModal(); loadScenarios();
+    }catch(e){ toast("save: "+e.message,"err"); }
+  }},existing?"Save":"Create");
+  openModal(existing?`Edit scenario · ${existing.name}`:"New scenario", body,
+    [el("button",{class:"btn ghost",onclick:closeModal},"Cancel"),save]);
+}
+async function resetScenarios(run_id, all=false){
+  const what = all?"EVERY scenario in ALL namespaces":`the ${run_id?('host "'+run_id+'"'):'default'} set`;
+  if(!confirm(`Clear ${what}? (CallLog is never touched)`)) return;
+  const body = all?{all:true}:{run_id};
+  try{ const r=await api("/reset/scenarios",{method:"POST",body:JSON.stringify(body)});
+    toast(`cleared ${r.scenarios_deleted} scenarios`,"ok"); loadScenarios(); }
+  catch(e){ toast("reset: "+e.message,"err"); }
+}
+function resetScenariosHost(){ const h=prompt("Clear scenarios for which host / run_id?"); if(h) resetScenarios(h.trim()); }
+
+// ============================ CALL LOG ======================================
+async function loadCalls(){
+  const p=document.getElementById("clPath").value.trim();
+  const ip=document.getElementById("clIp").value.trim();
+  const run=document.getElementById("clRun").value.trim();
+  const lim=document.getElementById("clLimit").value;
+  const q=new URLSearchParams(); if(p)q.set("path",p); if(ip)q.set("ip",ip); if(run)q.set("run_id",run); q.set("limit",lim);
+  try{ const d=await api("/calls?"+q.toString());
+    document.getElementById("callCount").textContent=`showing ${d.calls.length} of ${d.count} total calls`;
+    renderCalls(d); }
+  catch(e){ toast("calls: "+e.message,"err"); }
+}
+function renderCalls(d){
+  const t=document.getElementById("callTable"); t.innerHTML="";
+  t.append(el("tr",{},[el("th",{},"id"),el("th",{},"When"),el("th",{},"Req"),el("th",{},"Status"),el("th",{},"Scenario"),el("th",{},"Caller IP"),el("th",{},"Namespace")]));
+  if(!d.calls.length){ t.append(el("tr",{},el("td",{colspan:7},el("div",{class:"empty"},"No calls match.")))); }
+  for(const c of d.calls){
+    t.append(el("tr",{},[
+      el("td",{class:"muted"},String(c.id)),
+      el("td",{class:"muted nowrap"},(c.created_at||"").replace("T"," ").slice(11,19)),
+      el("td",{class:"mono truncate",title:c.method+" "+c.path},`${c.method} ${c.path}`),
+      el("td",{html:statusPill(c.status)}),
+      el("td",{},c.scenario||'<span class="muted">—</span>'),
+      el("td",{class:"mono"},c.ip||"—"),
+      el("td",{html:runChip(c.run_id)}),
+    ]));
+  }
+  const ct=document.getElementById("countTable"); ct.innerHTML="";
+  ct.append(el("tr",{},[el("th",{},"Path"),el("th",{class:"right"},"Calls")]));
+  const entries=Object.entries(d.counts||{}).sort((a,b)=>b[1]-a[1]);
+  if(!entries.length) ct.append(el("tr",{},el("td",{colspan:2},el("div",{class:"empty"},"—"))));
+  for(const [path,n] of entries) ct.append(el("tr",{},[el("td",{class:"mono truncate",title:path},path),el("td",{class:"right"},String(n))]));
+}
+function toggleAuto(){ const on=document.getElementById("clAuto").checked;
+  if(on){ AUTO=setInterval(loadCalls,3000); } else { clearInterval(AUTO); AUTO=null; } }
+
+// ---- boot ------------------------------------------------------------------
+async function health(){ try{ const f=await api("/formats"); document.getElementById("apihealth").textContent="admin API · "+(f.formats||[]).map(x=>x.name).join("/"); }
+  catch(e){ document.getElementById("apihealth").textContent="admin API unreachable ("+e.message+")"; } }
+health(); loadBundles();
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeModal(); });
+</script>
+</body>
+</html>
