@@ -5,3 +5,4 @@ POST,/vendor/lexisnexis/verify,json,ln-pass,5,,$.test_path,ln_pass,,200,json,0,"
 POST,/vendor/persona/inquiry,json,persona-poll,5,true,,,0,200,json,0,"{""state"":""PENDING""}",,
 POST,/vendor/persona/inquiry,json,persona-poll,5,true,,,1,200,json,0,"{""state"":""PENDING""}",,
 POST,/vendor/persona/inquiry,json,persona-poll,5,true,,,2,200,json,0,"{""state"":""COMPLETED"",""persona_kyc_verified"":true}",,
+POST,/api/v1/get_treatment/,json,kyc-split-treatment,5,,,,,200,json,0,"{""data"":{""KYC_STATUS_SPLIT"":""treatment""}}",,
