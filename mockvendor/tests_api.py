@@ -294,9 +294,18 @@ def testcases_import(request):
         if not raw_name.lower().endswith(".csv"):
             raw_name += ".csv"
         dest = DATA_DIR / raw_name
+        # Write to a fresh temp file and rename it into place, rather than
+        # truncating `dest` in place: an in-place write needs write permission
+        # on that exact inode, which a same-named file from an earlier deploy
+        # (e.g. checked out as a different user) may not grant this process —
+        # os.replace() only needs write permission on the containing directory,
+        # the same guarantee `git checkout` relies on for tracked files.
+        tmp = dest.with_name(f".{dest.name}.upload-{os.getpid()}.tmp")
         try:
-            dest.write_text(data["content"], encoding="utf-8")
+            tmp.write_text(data["content"], encoding="utf-8")
+            os.replace(tmp, dest)
         except OSError as exc:
+            tmp.unlink(missing_ok=True)
             return DrfResponse({"error": f"could not save upload: {exc}"},
                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         csv_p = dest
