@@ -26,6 +26,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response as DrfResponse
 
 from .models import TestCase, TestResult, TestRun
+from .pagination import page_envelope, parse_page_params
 from testrunner import runner as trunner
 from testrunner import schema as tschema
 
@@ -122,9 +123,12 @@ def testruns(request):
     if not _enabled():
         return _forbidden()
     if request.method == "GET":
-        limit = min(int(request.query_params.get("limit", 50) or 50), 500)
-        runs = TestRun.objects.all()[:limit]
-        return DrfResponse({"runs": [_run_json(r) for r in runs]})
+        limit, offset = parse_page_params(request, default_limit=50, max_limit=500)
+        qs = TestRun.objects.all()  # already ordered "-id" via Meta.ordering
+        total = qs.count()
+        page = list(qs[offset:offset + limit])
+        return DrfResponse({"runs": [_run_json(r) for r in page],
+                            **page_envelope(total, offset, limit, len(page))})
 
     # POST: start a run (source "csv" | "db")
     data = request.data if isinstance(request.data, dict) else {}
@@ -209,12 +213,16 @@ def testcases(request):
     if not _enabled():
         return _forbidden()
     if request.method == "GET":
-        qs = TestCase.objects.all()
+        qs = TestCase.objects.all()  # already ordered (suite, case_id) via Meta.ordering
         suite = request.query_params.get("suite")
         if suite is not None:
             qs = qs.filter(suite=suite)
         suites = sorted({s for s in TestCase.objects.values_list("suite", flat=True)})
-        return DrfResponse({"cases": [_case_json(t) for t in qs], "suites": suites})
+        limit, offset = parse_page_params(request, default_limit=200, max_limit=1000)
+        total = qs.count()
+        page = list(qs[offset:offset + limit])
+        return DrfResponse({"cases": [_case_json(t) for t in page], "suites": suites,
+                            **page_envelope(total, offset, limit, len(page))})
 
     # POST: create one case
     data = request.data if isinstance(request.data, dict) else {}
@@ -263,18 +271,42 @@ def testcase_detail(request, case_pk: int):
 
 @api_view(["POST"])
 def testcases_import(request):
-    """Import a data/*.csv suite into editable TestCase rows (templates preserved).
+    """Import a suite into editable TestCase rows (templates preserved).
 
-    Body: {csv, suite?}. suite defaults to the csv stem. Re-importing updates
-    existing (suite, case_id) rows.
+    Body is one of:
+      {csv, suite?}                    — import an existing file under data/
+      {filename, content, suite?}      — upload a CSV from the caller's own
+                                          machine: it is first WRITTEN under
+                                          data/ (so it also shows up in
+                                          /test-csvs and can be re-imported /
+                                          run as a CSV suite later), then
+                                          imported exactly like the first form.
+
+    suite defaults to the csv stem. Re-importing updates existing
+    (suite, case_id) rows rather than duplicating them.
     """
     if not _enabled():
         return _forbidden()
     data = request.data if isinstance(request.data, dict) else {}
-    csv_p = _resolve_csv(data.get("csv", ""))
-    if not csv_p:
-        return DrfResponse({"error": "csv must name a .csv file under data/"},
-                           status=status.HTTP_400_BAD_REQUEST)
+
+    if data.get("content") is not None:
+        raw_name = os.path.basename((data.get("filename") or "upload.csv").strip()) or "upload.csv"
+        if not raw_name.lower().endswith(".csv"):
+            raw_name += ".csv"
+        dest = DATA_DIR / raw_name
+        try:
+            dest.write_text(data["content"], encoding="utf-8")
+        except OSError as exc:
+            return DrfResponse({"error": f"could not save upload: {exc}"},
+                               status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        csv_p = dest
+    else:
+        csv_p = _resolve_csv(data.get("csv", ""))
+        if not csv_p:
+            return DrfResponse(
+                {"error": "csv must name a .csv file under data/, or supply {filename, content}"},
+                status=status.HTTP_400_BAD_REQUEST)
+
     suite = (data.get("suite") or csv_p.stem).strip()
     with csv_p.open(newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
@@ -289,6 +321,9 @@ def testcases_import(request):
                 groups.setdefault(cur, []).append(row)
             elif groups:
                 list(groups.values())[-1].append(row)
+    if not groups:
+        return DrfResponse({"error": "no case_id rows found in this CSV"},
+                           status=status.HTTP_400_BAD_REQUEST)
     n = 0
     for cid, rows in groups.items():
         case = tschema.parse_case_new(rows, interpolate=False)  # keep {{uuid}} templates
@@ -298,7 +333,7 @@ def testcases_import(request):
             defaults={"definition": defn, "tags": defn.get("tags", []) or [],
                       "notes": defn.get("notes", "") or "", "enabled": True})
         n += 1
-    return DrfResponse({"suite": suite, "imported": n})
+    return DrfResponse({"suite": suite, "imported": n, "csv": csv_p.name})
 
 
 @api_view(["POST"])

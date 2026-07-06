@@ -102,7 +102,7 @@
       <span class="spacer"></span>
       <span class="hint" id="bundleCount"></span>
     </div>
-    <div class="card scrollx"><table id="bundleTable"></table></div>
+    <div class="card"><div class="scrollx"><table id="bundleTable"></table></div><div id="bundlePager"></div></div>
   </section>
 
   <!-- SCENARIOS -->
@@ -126,13 +126,13 @@
       <input id="clIp" placeholder="caller ip" style="width:150px">
       <input id="clRun" placeholder="run_id / host" style="width:150px">
       <select id="clLimit"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select>
-      <button class="btn sm" onclick="loadCalls()">Apply</button>
+      <button class="btn sm" onclick="applyCallFilters()">Apply</button>
       <label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="clAuto" style="width:auto" onchange="toggleAuto()"> auto-refresh 3s</label>
       <span class="spacer"></span>
       <span class="hint" id="callCount"></span>
     </div>
     <div class="grid2" style="align-items:start">
-      <div class="card scrollx"><table id="callTable"></table></div>
+      <div class="card"><div class="scrollx"><table id="callTable"></table></div><div id="callPager"></div></div>
       <div class="card scrollx"><table id="countTable"></table></div>
     </div>
   </section>
@@ -141,13 +141,13 @@
   <section data-panel="testcases" hidden>
     <div class="toolbar">
       <button class="btn" onclick="openCaseEditor()">+ New case</button>
-      <select id="tcSuite" onchange="loadCases()" style="min-width:200px"><option value="__all">All suites</option></select>
+      <select id="tcSuite" onchange="selectCaseSuite()" style="min-width:200px"><option value="__all">All suites</option></select>
       <button class="btn ghost sm" onclick="importCsv()">⇩ Import CSV suite</button>
       <button class="btn sm" onclick="runSuite()" id="tcRunSuiteBtn">▶ Run this suite</button>
       <span class="spacer"></span>
       <span class="hint" id="tcCount"></span>
     </div>
-    <div class="card scrollx"><table id="caseTable"></table></div>
+    <div class="card"><div class="scrollx"><table id="caseTable"></table></div><div id="casePager"></div></div>
   </section>
 
   <!-- TESTS (runs) -->
@@ -163,7 +163,7 @@
       </div>
     </div>
     <div class="grid2" style="align-items:start;grid-template-columns:1fr 1.3fr">
-      <div class="card scrollx"><table id="runTable"></table></div>
+      <div class="card"><div class="scrollx"><table id="runTable"></table></div><div id="runPager"></div></div>
       <div class="card" id="runDetail" style="padding:0"><div class="empty">Select a run to see per-case results.</div></div>
     </div>
   </section>
@@ -201,6 +201,28 @@ function toast(msg, kind=""){ const t=el("div",{class:kind}); t.textContent=msg;
 function runChip(rid){ return `<span class="chip ${rid?'run':'default'}">${rid?esc(rid):'default'}</span>`; }
 function statusPill(s){ const c = s>=500?'st5':s>=400?'st4':'st2'; return `<span class="pill ${c}">${s}</span>`; }
 
+// ---- shared offset/limit pager (calls/bundles/runs/cases all use this) ----
+// Every list endpoint returns {count, offset, limit, has_more, ...items}; this
+// renders a "showing X–Y of Z  [Prev] [Next]" footer and re-invokes `onPage`
+// with the new offset. Pages are 0-indexed by offset, not by page number, so
+// it stays correct even if rows are added/removed between loads.
+function renderPager(container, env, pageLen, onPage){
+  container.innerHTML="";
+  if(env.count===0) return;
+  const from=env.offset+1, to=env.offset+pageLen;
+  const bar=el("div",{style:"display:flex;align-items:center;gap:10px;padding:10px 12px"});
+  bar.append(el("span",{class:"hint"},`showing ${from}–${to} of ${env.count}`));
+  bar.append(el("span",{class:"spacer"}));
+  const prev=el("button",{class:"btn ghost sm"},"← Prev");
+  const next=el("button",{class:"btn ghost sm"},"Next →");
+  prev.disabled = env.offset<=0;
+  next.disabled = !env.has_more;
+  prev.onclick=()=>onPage(Math.max(0, env.offset-env.limit));
+  next.onclick=()=>onPage(env.offset+env.limit);
+  bar.append(prev,next);
+  container.append(bar);
+}
+
 // ---- tab switching ---------------------------------------------------------
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b));
@@ -228,18 +250,23 @@ function openModal(title, bodyNodes, footNodes){
 document.getElementById("modal").addEventListener("click",e=>{ if(e.target.id==="modal") closeModal(); });
 
 // ============================ BUNDLES =======================================
-let BUNDLES=[];
-async function loadBundles(){
-  try{ BUNDLES=(await api("/register")).bundles||[]; renderBundles(); }
+// Server-paginated (newest-modified first); the filter box narrows within the
+// currently loaded page only — the count label makes that explicit.
+let BUNDLES=[], BUNDLE_ENV={count:0,offset:0,limit:100,has_more:false};
+async function loadBundles(offset){
+  offset = offset ?? BUNDLE_ENV.offset ?? 0;
+  try{ const d=await api(`/register?limit=100&offset=${offset}`); BUNDLES=d.bundles||[]; BUNDLE_ENV=d; renderBundles(); }
   catch(e){ toast("bundles: "+e.message,"err"); }
 }
 function renderBundles(){
   const q=(document.getElementById("bundleFilter").value||"").toLowerCase();
-  const rows=BUNDLES.filter(b=>b.id.toLowerCase().includes(q)).sort((a,b)=>a.id<b.id?-1:1);
-  document.getElementById("bundleCount").textContent=`${rows.length} / ${BUNDLES.length} bundles`;
+  const rows=BUNDLES.filter(b=>b.id.toLowerCase().includes(q));
+  document.getElementById("bundleCount").textContent = q
+    ? `${rows.length} matching on this page (${BUNDLES.length} loaded of ${BUNDLE_ENV.count} total)`
+    : `${BUNDLE_ENV.count} bundle(s)`;
   const t=document.getElementById("bundleTable"); t.innerHTML="";
   t.append(el("tr",{},[el("th",{},"Bundle id"),el("th",{},"Scenarios"),el("th",{},"Namespace"),el("th",{},"Modified"),el("th",{class:"right"},"Actions")]));
-  if(!rows.length){ t.append(el("tr",{},el("td",{colspan:5},el("div",{class:"empty"},"No bundles registered. Use the register scripts or “+ Register bundle”.")))); return; }
+  if(!rows.length){ t.append(el("tr",{},el("td",{colspan:5},el("div",{class:"empty"},"No bundles registered. Use the register scripts or “+ Register bundle”.")))); }
   for(const b of rows){
     const acts=el("div",{class:"row-actions"},[
       el("button",{class:"btn sm",onclick:()=>implementBundle(b.id)},"Implement"),
@@ -254,6 +281,7 @@ function renderBundles(){
       el("td",{},acts),
     ]));
   }
+  renderPager(document.getElementById("bundlePager"), BUNDLE_ENV, BUNDLES.length, (off)=>loadBundles(off));
 }
 async function implementBundle(id){
   const host=prompt(`Implement "${id}" into which namespace?\n\n· leave blank = default set (served to any caller with no per-host set)\n· enter a caller IP / run_id = isolated set for that host (parallel-safe)`,"");
@@ -414,17 +442,23 @@ async function resetScenarios(run_id, all=false){
 function resetScenariosHost(){ const h=prompt("Clear scenarios for which host / run_id?"); if(h) resetScenarios(h.trim()); }
 
 // ============================ CALL LOG ======================================
-async function loadCalls(){
+let CALL_OFFSET=0;
+async function loadCalls(offset){
+  if(offset!==undefined) CALL_OFFSET=offset;
   const p=document.getElementById("clPath").value.trim();
   const ip=document.getElementById("clIp").value.trim();
   const run=document.getElementById("clRun").value.trim();
   const lim=document.getElementById("clLimit").value;
-  const q=new URLSearchParams(); if(p)q.set("path",p); if(ip)q.set("ip",ip); if(run)q.set("run_id",run); q.set("limit",lim);
+  const q=new URLSearchParams(); if(p)q.set("path",p); if(ip)q.set("ip",ip); if(run)q.set("run_id",run);
+  q.set("limit",lim); q.set("offset",CALL_OFFSET);
   try{ const d=await api("/calls?"+q.toString());
-    document.getElementById("callCount").textContent=`showing ${d.calls.length} of ${d.count} total calls`;
+    document.getElementById("callCount").textContent = d.count
+      ? `showing ${d.offset+1}–${d.offset+d.calls.length} of ${d.count} total calls`
+      : "no calls match";
     renderCalls(d); }
   catch(e){ toast("calls: "+e.message,"err"); }
 }
+function applyCallFilters(){ loadCalls(0); }  // any filter change starts back at the newest page
 function renderCalls(d){
   const t=document.getElementById("callTable"); t.innerHTML="";
   t.append(el("tr",{},[el("th",{},"id"),el("th",{},"When"),el("th",{},"Req"),el("th",{},"Status"),el("th",{},"Scenario"),el("th",{},"Caller IP"),el("th",{},"Namespace")]));
@@ -445,27 +479,33 @@ function renderCalls(d){
   const entries=Object.entries(d.counts||{}).sort((a,b)=>b[1]-a[1]);
   if(!entries.length) ct.append(el("tr",{},el("td",{colspan:2},el("div",{class:"empty"},"—"))));
   for(const [path,n] of entries) ct.append(el("tr",{},[el("td",{class:"mono truncate",title:path},path),el("td",{class:"right"},String(n))]));
+  renderPager(document.getElementById("callPager"), d, d.calls.length, (off)=>loadCalls(off));
 }
 function toggleAuto(){ const on=document.getElementById("clAuto").checked;
-  if(on){ AUTO=setInterval(loadCalls,3000); } else { clearInterval(AUTO); AUTO=null; } }
+  // Auto-refresh only makes sense pinned to the newest page — otherwise new
+  // rows would silently shove whatever page you're reading further back.
+  if(on){ CALL_OFFSET=0; loadCalls(0); AUTO=setInterval(()=>loadCalls(0),3000); } else { clearInterval(AUTO); AUTO=null; } }
 
 // ============================ TEST CASES (editor) ===========================
 let CASES=[], CASE_SUITES=[];
-async function loadCases(){
+let CASE_ENV={count:0,offset:0,limit:200,has_more:false}, CASE_OFFSET=0;
+async function loadCases(offset){
+  if(offset!==undefined) CASE_OFFSET=offset;
   const suite=document.getElementById("tcSuite").value;
-  const qs = (suite && suite!=="__all") ? "?suite="+encodeURIComponent(suite) : "";
-  try{ const d=await api("/testcases"+qs); CASES=d.cases||[]; CASE_SUITES=d.suites||[]; renderCases(); }
+  const q=new URLSearchParams(); if(suite&&suite!=="__all")q.set("suite",suite); q.set("offset",CASE_OFFSET);
+  try{ const d=await api("/testcases?"+q.toString()); CASES=d.cases||[]; CASE_SUITES=d.suites||[]; CASE_ENV=d; renderCases(); }
   catch(e){ toast("cases: "+e.message,"err"); }
 }
+function selectCaseSuite(){ CASE_OFFSET=0; loadCases(0); }
 function renderCases(){
   const sel=document.getElementById("tcSuite"); const cur=sel.value;
   sel.innerHTML=`<option value="__all">All suites</option>`+CASE_SUITES.map(s=>`<option value="${esc(s)}">${esc(s)||"(none)"}</option>`).join("");
   if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
-  document.getElementById("tcCount").textContent=`${CASES.length} case(s)`;
+  document.getElementById("tcCount").textContent=`${CASE_ENV.count} case(s)`;
   document.getElementById("tcRunSuiteBtn").style.display=(cur&&cur!=="__all")?"":"none";
   const t=document.getElementById("caseTable"); t.innerHTML="";
   t.append(el("tr",{},[el("th",{},"Case"),el("th",{},"Suite"),el("th",{},"Seeds"),el("th",{},"Calls"),el("th",{},"Expects"),el("th",{},"Tags"),el("th",{},"On"),el("th",{class:"right"},"Actions")]));
-  if(!CASES.length){ t.append(el("tr",{},el("td",{colspan:8},el("div",{class:"empty"},"No stored cases. “Import CSV suite” to load an existing suite, or “+ New case”.")))); return; }
+  if(!CASES.length){ t.append(el("tr",{},el("td",{colspan:8},el("div",{class:"empty"},"No stored cases. “Import CSV suite” to load an existing suite, or “+ New case”.")))); }
   for(const c of CASES){
     const tog=el("input",{type:"checkbox"}); tog.checked=c.enabled; tog.onchange=()=>saveCasePatch(c.id,{enabled:tog.checked});
     const acts=el("div",{class:"row-actions"},[
@@ -484,19 +524,52 @@ function renderCases(){
       el("td",{},acts),
     ]));
   }
+  renderPager(document.getElementById("casePager"), CASE_ENV, CASES.length, (off)=>loadCases(off));
 }
 async function saveCasePatch(id,patch){ try{ await api("/testcases/"+id,{method:"PUT",body:JSON.stringify(patch)}); toast("saved","ok"); }
   catch(e){ toast("save: "+e.message,"err"); loadCases(); } }
 async function delCase(c){ if(!confirm(`Delete case ${c.case_id}?`))return;
   try{ await api("/testcases/"+c.id,{method:"DELETE"}); toast("deleted","ok"); loadCases(); }catch(e){ toast(e.message,"err"); } }
 async function importCsv(){
-  let csvs; try{ csvs=(await api("/test-csvs")).csvs||[]; }catch(e){ return toast(e.message,"err"); }
-  const names=csvs.map(c=>c.name);
-  const pick=prompt("Import which CSV suite into editable cases?\n\n"+names.join("\n"),names[0]||"");
-  if(!pick) return;
-  try{ const r=await api("/testcases/import",{method:"POST",body:JSON.stringify({csv:pick})});
-    toast(`imported ${r.imported} cases into suite "${r.suite}"`,"ok"); document.getElementById("tcSuite").value=r.suite; loadCases(); }
-  catch(e){ toast("import: "+e.message,"err"); }
+  let csvs=[]; try{ csvs=(await api("/test-csvs")).csvs||[]; }catch(e){ toast(e.message,"err"); }
+  const srvSel=el("select",{style:"min-width:260px"},
+    [el("option",{value:""},"— pick a suite already on the server —"),
+     ...csvs.map(c=>el("option",{value:c.name},`${c.name}${c.cases!=null?` (${c.cases} cases)`:""}`))]);
+  const srvSuite=el("input",{placeholder:"suite name (optional, defaults to filename)"});
+  const fileIn=el("input",{type:"file",accept:".csv,text/csv"});
+  const upSuite=el("input",{placeholder:"suite name (optional, defaults to filename)"});
+  const status_=el("div",{class:"hint"});
+  const mk=(label,node,hint)=>el("div",{class:"field"},[el("label",{},label),node,...(hint?[el("span",{class:"hint"},hint)]:[])]);
+
+  const body=[
+    el("div",{},[el("h3",{style:"margin:0 0 8px;font-size:13px"},"Option A — import a suite already on the server"),
+      el("div",{class:"grid2"},[mk("suite CSV",srvSel),mk("suite name (override)",srvSuite)])]),
+    el("div",{style:"border-top:1px solid var(--border);margin:16px 0;padding-top:16px"},[
+      el("h3",{style:"margin:0 0 8px;font-size:13px"},"Option B — upload a CSV from your machine"),
+      el("div",{class:"grid2"},[mk("choose file",fileIn,"seed.* format — same columns as the server suites (case_id, seed.path, seed.scenario, call.url, resp.status, …)"),mk("suite name (override)",upSuite)]),
+    ]),
+    status_,
+  ];
+  const doImport=async(payload)=>{
+    status_.textContent="importing…"; status_.style.color="";
+    try{ const r=await api("/testcases/import",{method:"POST",body:JSON.stringify(payload)});
+      toast(`imported ${r.imported} case(s) into suite "${r.suite}"${r.csv?` (saved as data/${r.csv})`:""}`,"ok");
+      document.getElementById("tcSuite").value=r.suite; closeModal(); loadCases();
+    }catch(e){ status_.textContent="✗ "+e.message; status_.style.color="var(--danger)"; }
+  };
+  const foot=[
+    el("button",{class:"btn ghost",onclick:closeModal},"Cancel"),
+    el("button",{class:"btn ghost",onclick:()=>{ if(!srvSel.value) return toast("pick a server suite first","err");
+      doImport({csv:srvSel.value, suite:srvSuite.value.trim()}); }},"Import from server"),
+    el("button",{class:"btn",onclick:()=>{
+      const file=fileIn.files[0]; if(!file) return toast("choose a .csv file first","err");
+      const reader=new FileReader();
+      reader.onload=()=>doImport({filename:file.name, content:reader.result, suite:upSuite.value.trim()});
+      reader.onerror=()=>toast("could not read file","err");
+      reader.readAsText(file);
+    }},"Upload & import"),
+  ];
+  openModal("Import test cases", body, foot);
 }
 async function runCase(c){
   try{ const r=await api("/testruns",{method:"POST",body:JSON.stringify({source:"db",case_ids:[c.id]})});
@@ -513,7 +586,7 @@ function gotoRunsAndOpen(id){ document.querySelector('nav button[data-tab="tests
 
 // ---- structured case editor ----
 const BLANK_CASE=()=>({case_id:"",flow_id:"flow-{{uuid:flow}}",id_key:"flow_id",tags:[],notes:"",
-  seeds:[{method:"POST",path:"/vendor/idology/verify",scenario:"idology-pass",priority:5,match_key:"",match_value:"",is_sequence:false,
+  seeds:[{method:"POST",path:"/vendor/idology/verify",scenario:"idology-pass",priority:5,match_key:"",match_value:"",run_id:"",is_sequence:false,
     responses:[{status:200,format:"xml",delay_ms:0,raw:'<?xml version="1.0"?><response><summary-result><key>id.success</key></summary-result></response>'}]}],
   call:{method:"POST",url:"http://10.0.63.105/api/v1/kyc/start",headers:{"Content-Type":"application/json"},body:{"meta.bright_uid":"{{uuid:uid}}","data.flow_id":"flow-{{uuid:flow}}","data.kyc_type":"DM"},expect_status:200},
   call_steps:[], repeat:{same_flow_id:1,distinct_ids:1,concurrent:1},
@@ -542,43 +615,77 @@ function renderCaseEditor(){
   body.append(el("div",{class:"grid3"},[mk("identity key (id_key)",idkey,"body field that carries the id — UKS uses flow_id; blank = none"),mk("tags (comma)",tags),mk("notes",notes)]));
 
   // seeds
-  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Seeds — what the mock returns to the AUT"));
+  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Seeds — canned responses the mock hands back when the AUT calls a vendor"));
+  body.append(el("div",{class:"hint",style:"margin-bottom:8px"},"One card per vendor endpoint you want mocked for this case. Add as many as the flow needs (e.g. idology, then lexisnexis, then persona)."));
   const seedWrap=el("div",{}); body.append(seedWrap);
   function drawSeeds(){
     seedWrap.innerHTML="";
     (d.seeds||[]).forEach((s,i)=>{
-      const card=el("div",{class:"card",style:"padding:10px;margin-bottom:8px;background:var(--panel2)"});
-      const method=el("input",{value:s.method||"POST",style:"width:70px"}),
-        path=el("input",{value:s.path||""}), scn=el("input",{value:s.scenario||""}),
-        mk_=el("input",{value:s.match_key||"",placeholder:"$.test_path"}), mv=el("input",{value:s.match_value||""}),
-        pr=el("input",{type:"number",value:s.priority??5,style:"width:70px"}),
+      const card=el("div",{class:"card",style:"padding:12px;margin-bottom:10px;background:var(--panel2)"});
+      card.append(el("div",{style:"font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px"},`Seed ${i+1}`));
+      const method=el("select",{style:"width:90px"},["POST","GET","PUT","DELETE","PATCH"].map(m=>el("option",{...(m===(s.method||"POST")?{selected:""}:{})},m))),
+        path=el("input",{value:s.path||"",placeholder:"/vendor/idology/verify"}),
+        scn=el("input",{value:s.scenario||"",placeholder:"idology-pass"}),
+        mk_=el("input",{value:s.match_key||"",placeholder:"e.g. $.test_path (blank = always matches)"}),
+        mv=el("input",{value:s.match_value||"",placeholder:"value to match"}),
+        pr=el("input",{type:"number",value:s.priority??5,style:"width:80px"}),
+        ns=el("input",{value:s.run_id||"",placeholder:"blank = default (any caller)"}),
         seq=el("input",{type:"checkbox"}); seq.checked=!!s.is_sequence;
       const resp=ta(s.responses||[],6);
-      const del=el("button",{class:"btn danger sm",onclick:()=>{d.seeds.splice(i,1);drawSeeds();}},"remove seed");
-      const sync=()=>{ s.method=method.value;s.path=path.value;s.scenario=scn.value;s.match_key=mk_.value;s.match_value=mv.value;s.priority=Number(pr.value)||0;s.is_sequence=seq.checked;
+      const del=el("button",{class:"btn danger sm",onclick:()=>{d.seeds.splice(i,1);drawSeeds();}},"✕ remove this seed");
+      const sync=()=>{ s.method=method.value;s.path=path.value;s.scenario=scn.value;s.match_key=mk_.value;s.match_value=mv.value;s.priority=Number(pr.value)||0;s.is_sequence=seq.checked;s.run_id=ns.value.trim();
         try{s.responses=JSON.parse(resp.value);}catch{} };
-      [method,path,scn,mk_,mv,pr].forEach(n=>n.addEventListener("change",sync)); seq.addEventListener("change",sync); resp.addEventListener("change",sync);
-      card.append(el("div",{class:"grid3"},[mk("method",method),mk("path",path),mk("scenario",scn)]));
-      card.append(el("div",{class:"grid3"},[mk("match_key",mk_),mk("match_value",mv),mk("priority",pr)]));
-      card.append(el("label",{class:"hint",style:"display:flex;gap:6px;align-items:center;margin:4px 0"},[seq," is_sequence (Nth-call responses)"]));
-      card.append(mk("responses[] — {status,format,delay_ms, raw | canonical}",resp));
-      card.append(del);
+      [method,path,scn,mk_,mv,pr,ns].forEach(n=>n.addEventListener("change",sync)); seq.addEventListener("change",sync); resp.addEventListener("change",sync);
+      card.append(el("div",{class:"grid3"},[mk("method",method),mk("path",path,"vendor URL the mock intercepts"),mk("scenario name",scn,"any label — identifies this canned response")]));
+      card.append(el("div",{class:"grid3"},[mk("match_key",mk_,"optional: only use this seed when the request body matches"),mk("match_value",mv),mk("priority",pr,"higher wins if several seeds could match")]));
+      card.append(mk("expect from IP / host (namespace)",ns,'blank = seed the default set, served to any caller. Set a caller IP (or run_id) to isolate this seed to that host only — useful for parallel runs; see the Scenarios tab namespace filter.'));
+      card.append(el("label",{class:"hint",style:"display:flex;gap:6px;align-items:center;margin:8px 0"},[seq," is_sequence — serve responses[] in order, one per call (Nth-call behaviour), instead of always the first"]));
+      card.append(mk("responses[] (JSON array)",resp,'each item: {"status":200,"format":"json"|"xml","delay_ms":0, and either "raw":"<...>" or "canonical":{...}}'));
+      card.append(el("div",{style:"text-align:right;margin-top:6px"},del));
       seedWrap.append(card);
     });
-    seedWrap.append(el("button",{class:"btn ghost sm",onclick:()=>{d.seeds=d.seeds||[];d.seeds.push({method:"POST",path:"",scenario:"",priority:5,match_key:"",match_value:"",is_sequence:false,responses:[{status:200,format:"json",canonical:{}}]});drawSeeds();}},"+ add seed"));
+    seedWrap.append(el("button",{class:"btn ghost sm",onclick:()=>{d.seeds=d.seeds||[];d.seeds.push({method:"POST",path:"",scenario:"",priority:5,match_key:"",match_value:"",run_id:"",is_sequence:false,responses:[{status:200,format:"json",canonical:{}}]});drawSeeds();}},"+ add another seed"));
   }
   drawSeeds();
 
-  // call
-  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Call — what the runner sends to the AUT"));
-  const cm=el("input",{value:(d.call||{}).method||"POST",style:"width:80px"}),
-        curl=el("input",{value:(d.call||{}).url||""}),
+  // call(s)
+  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Calls — the requests this test sends to the AUT, in order"));
+  body.append(el("div",{class:"hint",style:"margin-bottom:8px"},"Call 1 kicks off the flow. Add more calls for a multi-step flow (e.g. start → status_details → resume) — each runs after the previous one, in order."));
+
+  const c1card=el("div",{class:"card",style:"padding:12px;margin-bottom:10px;background:var(--panel2)"});
+  c1card.append(el("div",{style:"font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px"},"Call 1 · initial (required)"));
+  const cm=el("select",{style:"width:90px"},["POST","GET","PUT","DELETE","PATCH"].map(m=>el("option",{...(m===((d.call||{}).method||"POST")?{selected:""}:{})},m))),
+        curl=el("input",{value:(d.call||{}).url||"",placeholder:"http://<aut-host>/api/v1/kyc/start"}),
         ces=el("input",{type:"number",value:(d.call||{}).expect_status??200,style:"width:90px"}),
         chd=ta((d.call||{}).headers||{},3), cbody=ta((d.call||{}).body||{},6);
-  body.append(el("div",{class:"grid3"},[mk("method",cm),mk("url",curl),mk("expect_status",ces)]));
-  body.append(el("div",{class:"grid2"},[mk("headers (JSON)",chd),mk("body (JSON, dotted keys ok e.g. data.flow_id)",cbody)]));
-  const steps=ta(d.call_steps||[],5);
-  body.append(mk("follow-up call steps[] (JSON: status_details/resume …)",steps));
+  c1card.append(el("div",{class:"grid3"},[mk("method",cm),mk("url",curl,"the AUT endpoint this test drives"),mk("expect_status",ces,"HTTP status this call must return")]));
+  c1card.append(el("div",{class:"grid2"},[mk("headers (JSON)",chd),mk("body (JSON — dotted keys nest automatically, e.g. \"data.flow_id\")",cbody)]));
+  body.append(c1card);
+
+  const stepWrap=el("div",{}); body.append(stepWrap);
+  function drawSteps(){
+    stepWrap.innerHTML="";
+    (d.call_steps||[]).forEach((s,i)=>{
+      const card=el("div",{class:"card",style:"padding:12px;margin-bottom:10px;background:var(--panel2)"});
+      card.append(el("div",{style:"font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px"},`Call ${i+2} · follow-up`));
+      const m=el("select",{style:"width:90px"},["POST","GET","PUT","DELETE","PATCH"].map(mm=>el("option",{...(mm===(s.method||"POST")?{selected:""}:{})},mm))),
+        u=el("input",{value:s.url||"",placeholder:"http://<aut-host>/api/v1/kyc/resume"}),
+        es=el("input",{type:"number",value:s.expect_status??"",placeholder:"(any)",style:"width:90px"}),
+        dl=el("input",{type:"number",value:s.delay_ms??0,style:"width:110px"}),
+        hd=ta(s.headers||{},2), bd=ta(s.body||{},4);
+      const del=el("button",{class:"btn danger sm",onclick:()=>{d.call_steps.splice(i,1);drawSteps();}},"✕ remove this call");
+      const sync=()=>{ s.method=m.value;s.url=u.value;s.expect_status=es.value?Number(es.value):null;s.delay_ms=Number(dl.value)||0;
+        try{s.headers=JSON.parse(hd.value);}catch{} try{s.body=JSON.parse(bd.value);}catch{} };
+      [m,u,es,dl].forEach(n=>n.addEventListener("change",sync)); hd.addEventListener("change",sync); bd.addEventListener("change",sync);
+      card.append(el("div",{class:"grid3"},[mk("method",m),mk("url",u),mk("expect_status",es,"leave blank to not check")]));
+      card.append(mk("delay before this call (ms)",dl,"wait time after the previous call, e.g. letting an async provider settle"));
+      card.append(el("div",{class:"grid2"},[mk("headers (JSON)",hd),mk("body (JSON, dotted keys ok)",bd)]));
+      card.append(el("div",{style:"text-align:right;margin-top:6px"},del));
+      stepWrap.append(card);
+    });
+    stepWrap.append(el("button",{class:"btn ghost sm",onclick:()=>{d.call_steps=d.call_steps||[];d.call_steps.push({method:"POST",url:"",headers:{},body:{},expect_status:null,delay_ms:0});drawSteps();}},"+ add another call"));
+  }
+  drawSteps();
 
   // expectations
   body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Expectations — how the result is verified"));
@@ -635,8 +742,10 @@ async function loadTests(){
   }
   loadRuns();
 }
-async function loadRuns(){
-  try{ const d=await api("/testruns?limit=50"); renderRuns(d.runs||[]);
+let RUN_OFFSET=0;
+async function loadRuns(offset){
+  if(offset!==undefined) RUN_OFFSET=offset;
+  try{ const d=await api(`/testruns?limit=50&offset=${RUN_OFFSET}`); renderRuns(d);
     const active=(d.runs||[]).some(r=>r.status==="running"||r.status==="pending");
     document.getElementById("tRunBtn").disabled=active;
     document.getElementById("tHint").textContent=active?"a run is active — new runs are queued out (serialized)":"";
@@ -646,10 +755,11 @@ async function loadRuns(){
 }
 function runStatusPill(s){ const m={passed:"st2",failed:"st5",error:"st5",running:"st4",pending:"st4",cancelled:"st4"};
   return `<span class="pill ${m[s]||'st4'}">${s}</span>`; }
-function renderRuns(runs){
+function renderRuns(d){
+  const runs=d.runs||[];
   const t=document.getElementById("runTable"); t.innerHTML="";
   t.append(el("tr",{},[el("th",{},"#"),el("th",{},"Suite"),el("th",{},"Status"),el("th",{class:"right"},"Pass/Total"),el("th",{},"When"),el("th",{class:"right"},"")]));
-  if(!runs.length){ t.append(el("tr",{},el("td",{colspan:6},el("div",{class:"empty"},"No runs yet. Pick a suite and hit Run.")))); return; }
+  if(!runs.length){ t.append(el("tr",{},el("td",{colspan:6},el("div",{class:"empty"},"No runs yet. Pick a suite and hit Run.")))); }
   for(const r of runs){
     const acts=el("div",{class:"row-actions"},[
       el("button",{class:"btn ghost sm",onclick:()=>viewRun(r.id)},"View"),
@@ -665,6 +775,7 @@ function renderRuns(runs){
       el("td",{},acts),
     ]));
   }
+  renderPager(document.getElementById("runPager"), d, runs.length, (off)=>loadRuns(off));
 }
 async function runTest(){
   const csv=document.getElementById("tCsv").value;

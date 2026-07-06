@@ -26,6 +26,7 @@ from rest_framework.response import Response as DrfResponse
 
 from . import seed as seed_mod
 from .models import CallLog, Scenario, ScenarioBundle
+from .pagination import page_envelope, parse_page_params
 from .serializers_fmt import registry
 
 
@@ -125,7 +126,12 @@ def register(request):
     if not _enabled():
         return _forbidden()
     if request.method == "GET":
-        return DrfResponse({"bundles": [_bundle_json(b) for b in ScenarioBundle.objects.all()]})
+        limit, offset = parse_page_params(request, default_limit=100)
+        qs = ScenarioBundle.objects.order_by("-modified_at")
+        total = qs.count()
+        page = list(qs[offset:offset + limit])
+        return DrfResponse({"bundles": [_bundle_json(b) for b in page],
+                            **page_envelope(total, offset, limit, len(page))})
     bundle_id = request.data.get("id")
     definitions = request.data.get("scenarios")
     if not bundle_id or not isinstance(definitions, list) or not definitions:
@@ -186,25 +192,25 @@ def calls(request):
     run_id = request.query_params.get("run_id")
     if run_id is not None:
         qs = qs.filter(matched_run_id=run_id)
-    # Newest first, capped so the dashboard/log view stays responsive on a DB
+    # Newest first, paginated so the dashboard/log view stays responsive on a DB
     # that accumulates forever (CallLog is append-only, never reset).
-    try:
-        limit = min(int(request.query_params.get("limit", 200)), 2000)
-    except (TypeError, ValueError):
-        limit = 200
+    limit, offset = parse_page_params(request, default_limit=200, max_limit=2000)
     total = qs.count()
+    page = qs.order_by("-id")[offset:offset + limit]
     rows = [
         {"id": c.id, "method": c.request_method, "path": c.request_path,
          "status": c.response_status, "scenario": c.scenario.name if c.scenario else None,
          "ip": c.request_ip, "run_id": c.matched_run_id,
          "response_body": c.response_body, "delay_applied_ms": c.delay_applied_ms,
          "created_at": c.created_at.isoformat()}
-        for c in qs.order_by("-id")[:limit]
+        for c in page
     ]
     # Convenience: per-path counts (used by the runner's `calls` assertions).
+    # Computed over the full filtered set, not just this page.
     counts = {row["request_path"]: row["n"]
               for row in qs.values("request_path").annotate(n=Count("id"))}
-    return DrfResponse({"count": total, "counts": counts, "calls": rows})
+    return DrfResponse({"counts": counts, "calls": rows,
+                        **page_envelope(total, offset, limit, len(rows))})
 
 
 @api_view(["GET"])

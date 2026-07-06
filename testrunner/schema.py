@@ -116,6 +116,10 @@ class SeedGroup:
     match_value: str
     is_sequence: bool
     responses: list  # ordered list of resp dicts {status, format, delay_ms, raw, canonical}
+    # Scenario-set namespace this seed is written into (mockvendor.matcher.select):
+    # "" = default (served to any caller with no per-host set of its own);
+    # a caller IP / run_id = isolated to that host, see the parallel-run docs.
+    run_id: str = ""
 
     @property
     def resp(self) -> dict:
@@ -335,6 +339,7 @@ def parse_case_new(rows: list[dict], interpolate: bool = True) -> Case:
             priority=int(r("seed.priority") or 0),
             match_key=mk, match_value=mv,
             is_sequence=seq,
+            run_id=r("seed.run_id") or "",
             responses=[resp] if resp is not None else [],
         )
         by_key[key] = grp
@@ -397,7 +402,7 @@ def case_to_dict(case: Case) -> dict:
         "seeds": [{
             "method": s.method, "path": s.path, "scenario": s.scenario,
             "priority": s.priority, "match_key": s.match_key, "match_value": s.match_value,
-            "is_sequence": s.is_sequence, "responses": s.responses,
+            "is_sequence": s.is_sequence, "responses": s.responses, "run_id": s.run_id,
         } for s in case.seeds],
         "call": case.call,
         "call_steps": case.call_steps,
@@ -444,6 +449,7 @@ def case_from_dict(definition: dict, interpolate: bool = True) -> Case:
             scenario=deep(s.get("scenario", "")), priority=int(s.get("priority", 0) or 0),
             match_key=s.get("match_key", "") or "", match_value=deep(s.get("match_value", "") or ""),
             is_sequence=bool(s.get("is_sequence")) or len(responses) > 1,
+            run_id=deep(s.get("run_id", "") or ""),
             responses=responses,
         ))
 

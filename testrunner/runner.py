@@ -77,6 +77,10 @@ def _seed_payload(s: schema.SeedGroup) -> dict:
         "method": s.method, "path": s.path, "scenario": s.scenario,
         "priority": s.priority, "is_sequence": s.is_sequence or len(responses) > 1,
         "match_key": s.match_key, "match_value": s.match_value,
+        # Namespace this seed into a specific caller's scenario set (mockvendor
+        # matcher.select: header > caller IP > default). "" = default set,
+        # served to any caller with no isolated set of its own.
+        "run_id": s.run_id,
         "responses": responses,
     }
 
