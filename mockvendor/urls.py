@@ -19,4 +19,9 @@ urlpatterns = [
     path("test-csvs", tests_api.test_csvs),
     path("testruns", tests_api.testruns),
     path("testruns/<int:run_id>", tests_api.testrun_detail),
+    # editable DB-stored test cases (visual editor)
+    path("testcases", tests_api.testcases),
+    path("testcases/import", tests_api.testcases_import),
+    path("testcases/validate", tests_api.testcase_validate),
+    path("testcases/<int:case_pk>", tests_api.testcase_detail),
 ]

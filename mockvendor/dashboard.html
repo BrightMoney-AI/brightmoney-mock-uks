@@ -86,7 +86,8 @@
     <button data-tab="bundles" class="active">Bundles</button>
     <button data-tab="scenarios">Scenarios</button>
     <button data-tab="calls">Call Log</button>
-    <button data-tab="tests">Tests</button>
+    <button data-tab="testcases">Test Cases</button>
+    <button data-tab="tests">Runs</button>
   </nav>
   <div class="spacer"></div>
   <button class="btn ghost sm" onclick="refresh()">↻ Refresh</button>
@@ -136,7 +137,20 @@
     </div>
   </section>
 
-  <!-- TESTS -->
+  <!-- TEST CASES (visual editor) -->
+  <section data-panel="testcases" hidden>
+    <div class="toolbar">
+      <button class="btn" onclick="openCaseEditor()">+ New case</button>
+      <select id="tcSuite" onchange="loadCases()" style="min-width:200px"><option value="__all">All suites</option></select>
+      <button class="btn ghost sm" onclick="importCsv()">⇩ Import CSV suite</button>
+      <button class="btn sm" onclick="runSuite()" id="tcRunSuiteBtn">▶ Run this suite</button>
+      <span class="spacer"></span>
+      <span class="hint" id="tcCount"></span>
+    </div>
+    <div class="card scrollx"><table id="caseTable"></table></div>
+  </section>
+
+  <!-- TESTS (runs) -->
   <section data-panel="tests" hidden>
     <div class="card" style="padding:14px;margin-bottom:14px">
       <div class="toolbar" style="margin:0">
@@ -199,6 +213,7 @@ function refresh(){ const t=currentTab();
   if(t==="bundles") loadBundles();
   else if(t==="scenarios") loadScenarios();
   else if(t==="calls") loadCalls();
+  else if(t==="testcases") loadCases();
   else if(t==="tests") loadTests();
 }
 
@@ -433,6 +448,181 @@ function renderCalls(d){
 }
 function toggleAuto(){ const on=document.getElementById("clAuto").checked;
   if(on){ AUTO=setInterval(loadCalls,3000); } else { clearInterval(AUTO); AUTO=null; } }
+
+// ============================ TEST CASES (editor) ===========================
+let CASES=[], CASE_SUITES=[];
+async function loadCases(){
+  const suite=document.getElementById("tcSuite").value;
+  const qs = (suite && suite!=="__all") ? "?suite="+encodeURIComponent(suite) : "";
+  try{ const d=await api("/testcases"+qs); CASES=d.cases||[]; CASE_SUITES=d.suites||[]; renderCases(); }
+  catch(e){ toast("cases: "+e.message,"err"); }
+}
+function renderCases(){
+  const sel=document.getElementById("tcSuite"); const cur=sel.value;
+  sel.innerHTML=`<option value="__all">All suites</option>`+CASE_SUITES.map(s=>`<option value="${esc(s)}">${esc(s)||"(none)"}</option>`).join("");
+  if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
+  document.getElementById("tcCount").textContent=`${CASES.length} case(s)`;
+  document.getElementById("tcRunSuiteBtn").style.display=(cur&&cur!=="__all")?"":"none";
+  const t=document.getElementById("caseTable"); t.innerHTML="";
+  t.append(el("tr",{},[el("th",{},"Case"),el("th",{},"Suite"),el("th",{},"Seeds"),el("th",{},"Calls"),el("th",{},"Expects"),el("th",{},"Tags"),el("th",{},"On"),el("th",{class:"right"},"Actions")]));
+  if(!CASES.length){ t.append(el("tr",{},el("td",{colspan:8},el("div",{class:"empty"},"No stored cases. “Import CSV suite” to load an existing suite, or “+ New case”.")))); return; }
+  for(const c of CASES){
+    const tog=el("input",{type:"checkbox"}); tog.checked=c.enabled; tog.onchange=()=>saveCasePatch(c.id,{enabled:tog.checked});
+    const acts=el("div",{class:"row-actions"},[
+      el("button",{class:"btn sm",onclick:()=>runCase(c)},"Run"),
+      el("button",{class:"btn ghost sm",onclick:()=>openCaseEditor(c.id)},"Edit"),
+      el("button",{class:"btn danger sm",onclick:()=>delCase(c)},"✕"),
+    ]);
+    t.append(el("tr",{},[
+      el("td",{class:"mono"},c.case_id),
+      el("td",{html:c.suite?`<span class="chip run">${esc(c.suite)}</span>`:'<span class="chip">—</span>'}),
+      el("td",{class:"right"},String(c.summary.seeds)),
+      el("td",{class:"mono truncate muted",title:c.summary.call},(c.summary.call||"—").replace(/^https?:\/\//,"")),
+      el("td",{class:"right"},String(c.summary.expects)),
+      el("td",{class:"muted"},(c.tags||[]).join(", ")||"—"),
+      el("td",{},tog),
+      el("td",{},acts),
+    ]));
+  }
+}
+async function saveCasePatch(id,patch){ try{ await api("/testcases/"+id,{method:"PUT",body:JSON.stringify(patch)}); toast("saved","ok"); }
+  catch(e){ toast("save: "+e.message,"err"); loadCases(); } }
+async function delCase(c){ if(!confirm(`Delete case ${c.case_id}?`))return;
+  try{ await api("/testcases/"+c.id,{method:"DELETE"}); toast("deleted","ok"); loadCases(); }catch(e){ toast(e.message,"err"); } }
+async function importCsv(){
+  let csvs; try{ csvs=(await api("/test-csvs")).csvs||[]; }catch(e){ return toast(e.message,"err"); }
+  const names=csvs.map(c=>c.name);
+  const pick=prompt("Import which CSV suite into editable cases?\n\n"+names.join("\n"),names[0]||"");
+  if(!pick) return;
+  try{ const r=await api("/testcases/import",{method:"POST",body:JSON.stringify({csv:pick})});
+    toast(`imported ${r.imported} cases into suite "${r.suite}"`,"ok"); document.getElementById("tcSuite").value=r.suite; loadCases(); }
+  catch(e){ toast("import: "+e.message,"err"); }
+}
+async function runCase(c){
+  try{ const r=await api("/testruns",{method:"POST",body:JSON.stringify({source:"db",case_ids:[c.id]})});
+    toast(`started run #${r.id} for ${c.case_id}`,"ok"); gotoRunsAndOpen(r.id); }
+  catch(e){ toast("run: "+e.message,"err"); }
+}
+async function runSuite(){
+  const suite=document.getElementById("tcSuite").value; if(!suite||suite==="__all")return toast("pick a suite","err");
+  try{ const r=await api("/testruns",{method:"POST",body:JSON.stringify({source:"db",suite})});
+    toast(`started run #${r.id} for suite ${suite}`,"ok"); gotoRunsAndOpen(r.id); }
+  catch(e){ toast("run: "+e.message,"err"); }
+}
+function gotoRunsAndOpen(id){ document.querySelector('nav button[data-tab="tests"]').click(); OPEN_RUN=id; setTimeout(()=>{loadRuns();viewRun(id);},200); }
+
+// ---- structured case editor ----
+const BLANK_CASE=()=>({case_id:"",flow_id:"flow-{{uuid:flow}}",tags:[],notes:"",
+  seeds:[{method:"POST",path:"/vendor/idology/verify",scenario:"idology-pass",priority:5,match_key:"",match_value:"",is_sequence:false,
+    responses:[{status:200,format:"xml",delay_ms:0,raw:'<?xml version="1.0"?><response><summary-result><key>id.success</key></summary-result></response>'}]}],
+  call:{method:"POST",url:"http://10.0.63.105/api/v1/kyc/start",headers:{"Content-Type":"application/json"},body:{"meta.bright_uid":"{{uuid:uid}}","data.flow_id":"flow-{{uuid:flow}}","data.kyc_type":"DM"},expect_status:200},
+  call_steps:[], repeat:{same_flow_id:1,distinct_ids:1,concurrent:1},
+  resp:{status:200,body:{"error":"null","data.flow_id":"not_null"}},
+  db:{host:"brightmomey_uks_2",database:"",delay_ms:2000}, db_checks:[], calls:{}, kafka:{bootstrap:""}, kafka_checks:[]});
+
+let EDIT_ID=null, EDIT_DEF=null;
+async function openCaseEditor(id){
+  EDIT_ID=id||null;
+  if(id){ try{ const c=await api("/testcases/"+id); EDIT_DEF=c.definition||BLANK_CASE(); EDIT_SUITE=c.suite; }catch(e){ return toast(e.message,"err"); } }
+  else { EDIT_DEF=BLANK_CASE(); EDIT_SUITE=document.getElementById("tcSuite").value; if(EDIT_SUITE==="__all")EDIT_SUITE=""; }
+  renderCaseEditor();
+}
+let EDIT_SUITE="";
+function renderCaseEditor(){
+  const d=EDIT_DEF;
+  const body=el("div",{});
+  const mk=(label,node,hint)=>el("div",{class:"field"},[el("label",{},label),node,...(hint?[el("span",{class:"hint"},hint)]:[])]);
+  const ta=(val,rows=4)=>{const t=el("textarea",{rows});t.value=typeof val==="string"?val:JSON.stringify(val??"",null,2);return t;};
+
+  // meta
+  const cid=el("input",{value:d.case_id||""}), suite=el("input",{value:EDIT_SUITE||""}),
+        flow=el("input",{value:d.flow_id||""}), tags=el("input",{value:(d.tags||[]).join(", ")}),
+        notes=el("textarea",{rows:2}); notes.value=d.notes||"";
+  body.append(el("div",{class:"grid3"},[mk("case_id",cid),mk("suite",suite),mk("flow_id",flow)]));
+  body.append(el("div",{class:"grid2"},[mk("tags (comma)",tags),mk("notes",notes)]));
+
+  // seeds
+  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Seeds — what the mock returns to the AUT"));
+  const seedWrap=el("div",{}); body.append(seedWrap);
+  function drawSeeds(){
+    seedWrap.innerHTML="";
+    (d.seeds||[]).forEach((s,i)=>{
+      const card=el("div",{class:"card",style:"padding:10px;margin-bottom:8px;background:var(--panel2)"});
+      const method=el("input",{value:s.method||"POST",style:"width:70px"}),
+        path=el("input",{value:s.path||""}), scn=el("input",{value:s.scenario||""}),
+        mk_=el("input",{value:s.match_key||"",placeholder:"$.test_path"}), mv=el("input",{value:s.match_value||""}),
+        pr=el("input",{type:"number",value:s.priority??5,style:"width:70px"}),
+        seq=el("input",{type:"checkbox"}); seq.checked=!!s.is_sequence;
+      const resp=ta(s.responses||[],6);
+      const del=el("button",{class:"btn danger sm",onclick:()=>{d.seeds.splice(i,1);drawSeeds();}},"remove seed");
+      const sync=()=>{ s.method=method.value;s.path=path.value;s.scenario=scn.value;s.match_key=mk_.value;s.match_value=mv.value;s.priority=Number(pr.value)||0;s.is_sequence=seq.checked;
+        try{s.responses=JSON.parse(resp.value);}catch{} };
+      [method,path,scn,mk_,mv,pr].forEach(n=>n.addEventListener("change",sync)); seq.addEventListener("change",sync); resp.addEventListener("change",sync);
+      card.append(el("div",{class:"grid3"},[mk("method",method),mk("path",path),mk("scenario",scn)]));
+      card.append(el("div",{class:"grid3"},[mk("match_key",mk_),mk("match_value",mv),mk("priority",pr)]));
+      card.append(el("label",{class:"hint",style:"display:flex;gap:6px;align-items:center;margin:4px 0"},[seq," is_sequence (Nth-call responses)"]));
+      card.append(mk("responses[] — {status,format,delay_ms, raw | canonical}",resp));
+      card.append(del);
+      seedWrap.append(card);
+    });
+    seedWrap.append(el("button",{class:"btn ghost sm",onclick:()=>{d.seeds=d.seeds||[];d.seeds.push({method:"POST",path:"",scenario:"",priority:5,match_key:"",match_value:"",is_sequence:false,responses:[{status:200,format:"json",canonical:{}}]});drawSeeds();}},"+ add seed"));
+  }
+  drawSeeds();
+
+  // call
+  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Call — what the runner sends to the AUT"));
+  const cm=el("input",{value:(d.call||{}).method||"POST",style:"width:80px"}),
+        curl=el("input",{value:(d.call||{}).url||""}),
+        ces=el("input",{type:"number",value:(d.call||{}).expect_status??200,style:"width:90px"}),
+        chd=ta((d.call||{}).headers||{},3), cbody=ta((d.call||{}).body||{},6);
+  body.append(el("div",{class:"grid3"},[mk("method",cm),mk("url",curl),mk("expect_status",ces)]));
+  body.append(el("div",{class:"grid2"},[mk("headers (JSON)",chd),mk("body (JSON, dotted keys ok e.g. data.flow_id)",cbody)]));
+  const steps=ta(d.call_steps||[],5);
+  body.append(mk("follow-up call steps[] (JSON: status_details/resume …)",steps));
+
+  // expectations
+  body.append(el("h3",{style:"margin:16px 0 6px;font-size:13px"},"Expectations — how the result is verified"));
+  const rs=el("input",{type:"number",value:(d.resp||{}).status??200,style:"width:90px"}),
+        rb=ta((d.resp||{}).body||{},4), calls=ta(d.calls||{},4);
+  body.append(el("div",{class:"grid2"},[mk("resp.status",rs),mk("resp.body expects (JSON: key→value|not_null|/regex/)",rb)]));
+  body.append(mk("call counts (JSON: path→N or \">=N\")",calls));
+  const dbh=el("input",{value:(d.db||{}).host||""}), dbn=el("input",{value:(d.db||{}).database||""}),
+        dbd=el("input",{type:"number",value:(d.db||{}).delay_ms??0,style:"width:110px"}), dbc=ta(d.db_checks||[],5);
+  body.append(el("div",{class:"grid3"},[mk("db.host",dbh),mk("db.database",dbn),mk("db.delay_ms",dbd)]));
+  body.append(mk("db_checks[] (JSON: {table,where,expect})",dbc));
+
+  const valMsg=el("div",{class:"hint"});
+  function collect(){
+    const parse=(t,fb)=>{try{return JSON.parse(t.value);}catch{return fb;}};
+    // sync seed cards already updated d.seeds via their listeners
+    return {
+      case_id:cid.value.trim(), flow_id:flow.value.trim(),
+      tags:tags.value.split(",").map(x=>x.trim()).filter(Boolean), notes:notes.value,
+      seeds:d.seeds||[],
+      call:{method:cm.value,url:curl.value.trim(),headers:parse(chd,{}),body:parse(cbody,{}),expect_status:ces.value?Number(ces.value):null},
+      call_steps:parse(steps,[]), repeat:d.repeat||{same_flow_id:1,distinct_ids:1,concurrent:1},
+      resp:{status:rs.value?Number(rs.value):null,body:parse(rb,{})}, calls:parse(calls,{}),
+      db:{host:dbh.value.trim(),database:dbn.value.trim(),delay_ms:Number(dbd.value)||0}, db_checks:parse(dbc,[]),
+      kafka:d.kafka||{bootstrap:""}, kafka_checks:d.kafka_checks||[],
+    };
+  }
+  const foot=[
+    el("button",{class:"btn ghost",onclick:closeModal},"Cancel"),
+    el("button",{class:"btn ghost",onclick:async()=>{ const def=collect();
+      try{ const v=await api("/testcases/validate",{method:"POST",body:JSON.stringify({definition:def})});
+        valMsg.textContent=v.ok?"✓ valid":("✗ "+v.errors.join("; ")); valMsg.style.color=v.ok?"var(--accent2)":"var(--danger)"; }
+      catch(e){ toast(e.message,"err"); } }},"Validate"),
+    el("button",{class:"btn",onclick:async()=>{ const def=collect();
+      if(!def.case_id) return toast("case_id required","err");
+      const payload={case_id:def.case_id,suite:suite.value.trim(),definition:def,enabled:true};
+      try{ if(EDIT_ID){ await api("/testcases/"+EDIT_ID,{method:"PUT",body:JSON.stringify(payload)}); }
+           else{ await api("/testcases",{method:"POST",body:JSON.stringify(payload)}); }
+        toast("saved "+def.case_id,"ok"); closeModal(); loadCases(); }
+      catch(e){ toast("save: "+e.message,"err"); } }},EDIT_ID?"Save":"Create"),
+  ];
+  openModal(EDIT_ID?`Edit case`:"New test case",[body,valMsg],foot);
+  document.querySelector(".modal").style.width="min(900px,100%)";
+}
 
 // ============================ TESTS =========================================
 let CSVS_LOADED=false, TEST_POLL=null, OPEN_RUN=null;

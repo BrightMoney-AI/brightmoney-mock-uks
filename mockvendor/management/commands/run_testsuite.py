@@ -17,8 +17,9 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from mockvendor.models import TestResult, TestRun
+from mockvendor.models import TestCase, TestResult, TestRun
 from testrunner import runner as trunner
+from testrunner import schema as tschema
 
 
 class Command(BaseCommand):
@@ -40,17 +41,31 @@ class Command(BaseCommand):
         run.save(update_fields=["status", "started_at"])
 
         try:
-            csv_abs = (Path(settings.BASE_DIR) / run.csv_path).resolve()
-            cases = trunner.load_cases(str(csv_abs))
-            if run.tag:
-                cases = [c for c in cases if run.tag in c.tags]
-            if run.case_filter.strip():
-                wanted = {x.strip() for x in run.case_filter.replace("\n", ",").split(",") if x.strip()}
-                cases = [c for c in cases if c.case_id in wanted]
+            if run.source == "db":
+                qs = TestCase.objects.filter(enabled=True)
+                if run.suite:
+                    qs = qs.filter(suite=run.suite)
+                if run.case_ids:
+                    qs = qs.filter(id__in=run.case_ids)
+                tcs = list(qs)
+                if run.case_filter.strip():
+                    wanted = {x.strip() for x in run.case_filter.replace("\n", ",").split(",") if x.strip()}
+                    tcs = [t for t in tcs if t.case_id in wanted]
+                cases = [tschema.case_from_dict(t.definition) for t in tcs]
+                src = f"db suite={run.suite!r} ids={run.case_ids or 'all'}"
+            else:
+                csv_abs = (Path(settings.BASE_DIR) / run.csv_path).resolve()
+                cases = trunner.load_cases(str(csv_abs))
+                if run.tag:
+                    cases = [c for c in cases if run.tag in c.tags]
+                if run.case_filter.strip():
+                    wanted = {x.strip() for x in run.case_filter.replace("\n", ",").split(",") if x.strip()}
+                    cases = [c for c in cases if c.case_id in wanted]
+                src = run.csv_path
 
             run.total = len(cases)
             run.save(update_fields=["total"])
-            self.stdout.write(f"run {run_id}: {len(cases)} case(s) from {run.csv_path} "
+            self.stdout.write(f"run {run_id}: {len(cases)} case(s) from {src} "
                               f"(tag={run.tag!r} filter={run.case_filter!r}) mock_base={run.mock_base}")
 
             r = trunner.Runner(run.mock_base)

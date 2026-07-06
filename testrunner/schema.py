@@ -189,13 +189,14 @@ def _coerce(v: str):
     return v
 
 
-def _parse_extra_calls(first: dict, g, _ctx: dict) -> list:
+def _parse_extra_calls(first: dict, g, _ctx: dict, interp=True) -> list:
     """Parse call2.*, call3.*, … into sequential call steps."""
+    _i = (lambda s: _interpolate(s, _ctx)) if interp else (lambda s: s)
     steps = []
     for n in range(2, 10):
         if not g(f"call{n}.url"):
             continue
-        body = {k[len(f"call{n}.body."):]: _coerce(_interpolate(v.strip(), _ctx))
+        body = {k[len(f"call{n}.body."):]: _coerce(_i(v.strip()))
                 for k, v in first.items() if k.startswith(f"call{n}.body.") and (v or "").strip()}
         steps.append({
             "method": g(f"call{n}.method") or "POST",
@@ -283,15 +284,20 @@ def is_new_format(fieldnames: list[str]) -> bool:
     return "seed.path" in fieldnames
 
 
-def parse_case_new(rows: list[dict]) -> Case:
+def parse_case_new(rows: list[dict], interpolate: bool = True) -> Case:
     """Parse a case from one or more rows using the new single seed.* column format.
 
     The first row carries all metadata (call, repeat, resp, db, kafka, calls).
     Every row (including the first) contributes one seed via the seed.* columns.
+
+    ``interpolate=False`` keeps ``{{uuid[:name]}}`` templates intact — used when
+    importing a CSV into an editable DB TestCase so fresh UUIDs are generated per
+    run (via case_from_dict) rather than frozen at import time.
     """
     first = rows[0]
     _ctx: dict = {}
-    g = lambda k: _interpolate((first.get(k) or "").strip(), _ctx)
+    _i = (lambda s: _interpolate(s, _ctx)) if interpolate else (lambda s: s)
+    g = lambda k: _i((first.get(k) or "").strip())
 
     # Rows sharing (method, path, scenario) define a multi-response SEQUENCE,
     # served in row order (matches the mock's seq_cursor model). Order of first
@@ -299,7 +305,7 @@ def parse_case_new(rows: list[dict]) -> Case:
     seeds: list[SeedGroup] = []
     by_key: dict[tuple, SeedGroup] = {}
     for i, row in enumerate(rows):
-        r = lambda k, _row=row: _interpolate((_row.get(k) or "").strip(), _ctx)
+        r = lambda k, _row=row: _i((_row.get(k) or "").strip())
         if not r("seed.path"):
             continue
         match_cell = r("seed.match")
@@ -330,7 +336,7 @@ def parse_case_new(rows: list[dict]) -> Case:
         by_key[key] = grp
         seeds.append(grp)
 
-    body = {k[len("call.body."):]: _coerce(_interpolate(v.strip(), _ctx))
+    body = {k[len("call.body."):]: _coerce(_i(v.strip()))
             for k, v in first.items() if k.startswith("call.body.") and (v or "").strip()}
     call = {
         "method": g("call.method") or "POST",
@@ -368,9 +374,109 @@ def parse_case_new(rows: list[dict]) -> Case:
         seeds=seeds, call=call, repeat=repeat, resp=resp,
         db_host=g("db.host"), db_database=g("db.database"), db_checks=db_checks,
         kafka_bootstrap=g("kafka.bootstrap"), kafka_checks=kafka_checks,
-        calls=calls, call_steps=_parse_extra_calls(first, g, _ctx),
+        calls=calls, call_steps=_parse_extra_calls(first, g, _ctx, interp=interpolate),
         db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
         notes=g("notes"), raw=first,
+    )
+
+
+# --- structured (dict) <-> Case conversion for DB-stored, editable cases ----
+def case_to_dict(case: Case) -> dict:
+    """Serialise a parsed Case to the JSON definition stored on TestCase.definition."""
+    return {
+        "case_id": case.case_id,
+        "flow_id": case.flow_id,
+        "tags": case.tags,
+        "notes": case.notes,
+        "client_context": case.client_context,
+        "seeds": [{
+            "method": s.method, "path": s.path, "scenario": s.scenario,
+            "priority": s.priority, "match_key": s.match_key, "match_value": s.match_value,
+            "is_sequence": s.is_sequence, "responses": s.responses,
+        } for s in case.seeds],
+        "call": case.call,
+        "call_steps": case.call_steps,
+        "repeat": case.repeat,
+        "resp": case.resp,
+        "db": {"host": case.db_host, "database": case.db_database, "delay_ms": case.db_delay_ms},
+        "db_checks": [{"table": d.table, "where": d.where, "expect": d.expect} for d in case.db_checks],
+        "calls": case.calls,
+        "kafka": {"bootstrap": case.kafka_bootstrap},
+        "kafka_checks": [{"topic": k.topic, "key": k.key, "expect": k.expect} for k in case.kafka_checks],
+    }
+
+
+def case_from_dict(definition: dict, interpolate: bool = True) -> Case:
+    """Build a runnable Case from a stored JSON definition.
+
+    ``{{uuid[:name]}}`` templates in every string are resolved against ONE shared
+    context, so a value referenced in the call body (e.g. flow-{{uuid:flow}}) and
+    in a db_check where-clause resolve to the same UUID within the run.
+    """
+    _ctx: dict = {}
+
+    def deep(v):
+        if isinstance(v, str):
+            return _interpolate(v, _ctx) if interpolate else v
+        if isinstance(v, dict):
+            return {k: deep(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [deep(x) for x in v]
+        return v
+
+    seeds: list[SeedGroup] = []
+    for i, s in enumerate(definition.get("seeds", []) or [], 1):
+        responses = []
+        for r in (s.get("responses") or []):
+            rr = dict(r)
+            if rr.get("raw"):
+                rr["raw"] = deep(rr["raw"])
+            if rr.get("canonical") is not None:
+                rr["canonical"] = deep(rr["canonical"])
+            responses.append(rr)
+        seeds.append(SeedGroup(
+            index=i, path=deep(s.get("path", "")), method=s.get("method", "POST"),
+            scenario=deep(s.get("scenario", "")), priority=int(s.get("priority", 0) or 0),
+            match_key=s.get("match_key", "") or "", match_value=deep(s.get("match_value", "") or ""),
+            is_sequence=bool(s.get("is_sequence")) or len(responses) > 1,
+            responses=responses,
+        ))
+
+    call = deep(definition.get("call", {}) or {})
+    call.setdefault("method", "POST")
+    call.setdefault("headers", {})
+    call.setdefault("body", {})
+    call.setdefault("expect_status", None)
+
+    repeat = definition.get("repeat", {}) or {}
+    repeat = {"same_flow_id": int(repeat.get("same_flow_id", 1) or 1),
+              "distinct_ids": int(repeat.get("distinct_ids", 1) or 1),
+              "concurrent": int(repeat.get("concurrent", 1) or 1)}
+
+    resp = definition.get("resp", {}) or {}
+    resp = {"status": resp.get("status"), "body": deep(resp.get("body", {}) or {})}
+
+    db = definition.get("db", {}) or {}
+    db_checks = [DbCheck(table=c.get("table", ""), where=deep(c.get("where", {}) or {}),
+                         expect=deep(c.get("expect", {}) or {}))
+                 for c in (definition.get("db_checks") or [])]
+    kafka = definition.get("kafka", {}) or {}
+    kafka_checks = [KafkaCheck(topic=c.get("topic", ""), key=deep(c.get("key", "")),
+                               expect=deep(c.get("expect", {})))
+                    for c in (definition.get("kafka_checks") or [])]
+
+    return Case(
+        case_id=definition.get("case_id", ""),
+        flow_id=deep(definition.get("flow_id", "")) or definition.get("case_id", ""),
+        tags=definition.get("tags", []) or [],
+        client_context=definition.get("client_context", ""),
+        seeds=seeds, call=call, repeat=repeat, resp=resp,
+        db_host=db.get("host", ""), db_database=db.get("database", ""), db_checks=db_checks,
+        kafka_bootstrap=kafka.get("bootstrap", ""), kafka_checks=kafka_checks,
+        calls={deep(k): v for k, v in (definition.get("calls", {}) or {}).items()},
+        call_steps=[deep(s) for s in (definition.get("call_steps") or [])],
+        db_delay_ms=int(db.get("delay_ms", 0) or 0),
+        notes=definition.get("notes", ""), raw=definition,
     )
 
 

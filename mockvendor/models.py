@@ -109,6 +109,33 @@ class ScenarioBundle(models.Model):
         return self.bundle_id
 
 
+class TestCase(models.Model):
+    """A structured, DB-stored test case editable from the dashboard.
+
+    ``definition`` mirrors the runner's parsed Case (seeds / call / call_steps /
+    expectations), so it runs through the same testrunner.Runner via
+    schema.case_from_dict — no CSV round-trip. Existing CSV suites can be
+    imported into these rows to become visually editable.
+    """
+
+    case_id = models.CharField(max_length=120)
+    suite = models.CharField(max_length=120, blank=True, db_index=True)  # grouping label
+    definition = models.JSONField(default=dict)  # {seeds, call, call_steps, resp, calls, db_checks, ...}
+    tags = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True)
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    modified_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mockvendor_testcase"
+        ordering = ["suite", "case_id"]
+        unique_together = ("suite", "case_id")
+
+    def __str__(self) -> str:
+        return f"{self.suite}:{self.case_id}" if self.suite else self.case_id
+
+
 class TestRun(models.Model):
     """One execution of a CSV test suite (design: dashboard-triggered runs).
 
@@ -124,7 +151,10 @@ class TestRun(models.Model):
         ("error", "error"), ("cancelled", "cancelled"),
     ]
 
-    csv_path = models.CharField(max_length=255)          # relative to data/
+    source = models.CharField(max_length=8, default="csv")  # "csv" | "db"
+    csv_path = models.CharField(max_length=255, blank=True)  # relative to data/ (csv source)
+    suite = models.CharField(max_length=120, blank=True)     # TestCase suite (db source)
+    case_ids = models.JSONField(default=list, blank=True)    # explicit TestCase ids (db source)
     tag = models.CharField(max_length=120, blank=True)   # optional tag filter
     case_filter = models.TextField(blank=True)           # optional comma-sep case_ids
     mock_base = models.CharField(max_length=255, default="http://127.0.0.1")

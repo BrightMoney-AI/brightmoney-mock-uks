@@ -25,7 +25,9 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response as DrfResponse
 
-from .models import TestResult, TestRun
+from .models import TestCase, TestResult, TestRun
+from testrunner import runner as trunner
+from testrunner import schema as tschema
 
 DATA_DIR = (Path(settings.BASE_DIR) / "data").resolve()
 ACTIVE = ("pending", "running")
@@ -57,7 +59,9 @@ def _resolve_csv(name: str) -> Path | None:
 
 def _run_json(run: TestRun, with_results: bool = False) -> dict:
     d = {
-        "id": run.id, "csv": run.csv_path, "tag": run.tag, "case_filter": run.case_filter,
+        "id": run.id, "source": run.source, "csv": run.csv_path,
+        "suite": run.suite, "case_ids": run.case_ids,
+        "tag": run.tag, "case_filter": run.case_filter,
         "mock_base": run.mock_base, "status": run.status, "total": run.total,
         "passed": run.passed, "failed": run.failed, "skipped": run.skipped,
         "error": run.error, "created_ip": run.created_ip,
@@ -122,12 +126,29 @@ def testruns(request):
         runs = TestRun.objects.all()[:limit]
         return DrfResponse({"runs": [_run_json(r) for r in runs]})
 
-    # POST: start a run
+    # POST: start a run (source "csv" | "db")
     data = request.data if isinstance(request.data, dict) else {}
-    csv_p = _resolve_csv(data.get("csv", ""))
-    if not csv_p:
-        return DrfResponse({"error": "csv must name a .csv file under data/"},
-                           status=status.HTTP_400_BAD_REQUEST)
+    source = (data.get("source") or "csv").strip()
+    common = dict(
+        tag=(data.get("tag") or "").strip(),
+        case_filter=(data.get("cases") or "").strip(),
+        mock_base=(data.get("mock_base") or "http://127.0.0.1").strip().rstrip("/"),
+        created_ip=_client_ip(request), status="pending",
+    )
+    if source == "db":
+        case_ids = data.get("case_ids") or []
+        suite = (data.get("suite") or "").strip()
+        if not case_ids and not suite:
+            return DrfResponse({"error": "db run needs 'suite' or 'case_ids'"},
+                               status=status.HTTP_400_BAD_REQUEST)
+        create_kw = dict(source="db", suite=suite, case_ids=list(case_ids), **common)
+    else:
+        csv_p = _resolve_csv(data.get("csv", ""))
+        if not csv_p:
+            return DrfResponse({"error": "csv must name a .csv file under data/"},
+                               status=status.HTTP_400_BAD_REQUEST)
+        create_kw = dict(source="csv", csv_path=str(csv_p.relative_to(settings.BASE_DIR)), **common)
+
     active = TestRun.objects.filter(status__in=ACTIVE).first()
     if active:
         return DrfResponse(
@@ -135,13 +156,7 @@ def testruns(request):
                       "runs are serialized to avoid scenario collisions"},
             status=status.HTTP_409_CONFLICT)
 
-    run = TestRun.objects.create(
-        csv_path=str(csv_p.relative_to(settings.BASE_DIR)),
-        tag=(data.get("tag") or "").strip(),
-        case_filter=(data.get("cases") or "").strip(),
-        mock_base=(data.get("mock_base") or "http://127.0.0.1").strip().rstrip("/"),
-        created_ip=_client_ip(request), status="pending",
-    )
+    run = TestRun.objects.create(**create_kw)
     try:
         pid, log_path = _spawn(run.id)
         run.pid, run.log_path = pid, log_path
@@ -165,3 +180,136 @@ def testrun_detail(request, run_id: int):
         run.delete()
         return DrfResponse(status=status.HTTP_204_NO_CONTENT)
     return DrfResponse(_run_json(run, with_results=True))
+
+
+# ---------------------------------------------------------------------------
+# Editable DB-stored test cases (visual editor backing store)
+# ---------------------------------------------------------------------------
+def _case_json(tc: TestCase, full: bool = False) -> dict:
+    d = {"id": tc.id, "case_id": tc.case_id, "suite": tc.suite, "tags": tc.tags,
+         "enabled": tc.enabled, "notes": tc.notes,
+         "modified_at": tc.modified_at.isoformat()}
+    if full:
+        d["definition"] = tc.definition
+    else:
+        defn = tc.definition or {}
+        d["summary"] = {
+            "seeds": len(defn.get("seeds", []) or []),
+            "call": (defn.get("call", {}) or {}).get("url", ""),
+            "steps": len(defn.get("call_steps", []) or []),
+            "expects": len((defn.get("resp", {}) or {}).get("body", {}) or {})
+                       + len(defn.get("db_checks", []) or [])
+                       + len(defn.get("calls", {}) or {}),
+        }
+    return d
+
+
+@api_view(["GET", "POST"])
+def testcases(request):
+    if not _enabled():
+        return _forbidden()
+    if request.method == "GET":
+        qs = TestCase.objects.all()
+        suite = request.query_params.get("suite")
+        if suite is not None:
+            qs = qs.filter(suite=suite)
+        suites = sorted({s for s in TestCase.objects.values_list("suite", flat=True)})
+        return DrfResponse({"cases": [_case_json(t) for t in qs], "suites": suites})
+
+    # POST: create one case
+    data = request.data if isinstance(request.data, dict) else {}
+    defn = data.get("definition") or {}
+    case_id = (data.get("case_id") or defn.get("case_id") or "").strip()
+    if not case_id:
+        return DrfResponse({"error": "case_id required"}, status=status.HTTP_400_BAD_REQUEST)
+    defn["case_id"] = case_id
+    tc = TestCase.objects.create(
+        case_id=case_id, suite=(data.get("suite") or "").strip(),
+        definition=defn, tags=defn.get("tags", []) or [], notes=defn.get("notes", "") or "",
+        enabled=bool(data.get("enabled", True)),
+    )
+    return DrfResponse(_case_json(tc, full=True), status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PUT", "DELETE"])
+def testcase_detail(request, case_pk: int):
+    if not _enabled():
+        return _forbidden()
+    try:
+        tc = TestCase.objects.get(pk=case_pk)
+    except TestCase.DoesNotExist:
+        return DrfResponse({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+    if request.method == "DELETE":
+        tc.delete()
+        return DrfResponse(status=status.HTTP_204_NO_CONTENT)
+    if request.method == "PUT":
+        data = request.data if isinstance(request.data, dict) else {}
+        defn = data.get("definition")
+        if defn is not None:
+            if data.get("case_id"):
+                defn["case_id"] = data["case_id"].strip()
+            tc.definition = defn
+            tc.tags = defn.get("tags", tc.tags) or []
+            tc.notes = defn.get("notes", tc.notes) or ""
+        if "case_id" in data:
+            tc.case_id = data["case_id"].strip()
+        if "suite" in data:
+            tc.suite = (data["suite"] or "").strip()
+        if "enabled" in data:
+            tc.enabled = bool(data["enabled"])
+        tc.save()
+    return DrfResponse(_case_json(tc, full=True))
+
+
+@api_view(["POST"])
+def testcases_import(request):
+    """Import a data/*.csv suite into editable TestCase rows (templates preserved).
+
+    Body: {csv, suite?}. suite defaults to the csv stem. Re-importing updates
+    existing (suite, case_id) rows.
+    """
+    if not _enabled():
+        return _forbidden()
+    data = request.data if isinstance(request.data, dict) else {}
+    csv_p = _resolve_csv(data.get("csv", ""))
+    if not csv_p:
+        return DrfResponse({"error": "csv must name a .csv file under data/"},
+                           status=status.HTTP_400_BAD_REQUEST)
+    suite = (data.get("suite") or csv_p.stem).strip()
+    with csv_p.open(newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        if not tschema.is_new_format(list(reader.fieldnames or [])):
+            return DrfResponse({"error": "only the seed.* CSV format is importable"},
+                               status=status.HTTP_400_BAD_REQUEST)
+        groups: dict[str, list[dict]] = {}
+        for row in reader:
+            cid = (row.get("case_id") or "").strip()
+            if cid:
+                cur = cid
+                groups.setdefault(cur, []).append(row)
+            elif groups:
+                list(groups.values())[-1].append(row)
+    n = 0
+    for cid, rows in groups.items():
+        case = tschema.parse_case_new(rows, interpolate=False)  # keep {{uuid}} templates
+        defn = tschema.case_to_dict(case)
+        TestCase.objects.update_or_create(
+            suite=suite, case_id=cid,
+            defaults={"definition": defn, "tags": defn.get("tags", []) or [],
+                      "notes": defn.get("notes", "") or "", "enabled": True})
+        n += 1
+    return DrfResponse({"suite": suite, "imported": n})
+
+
+@api_view(["POST"])
+def testcase_validate(request):
+    """Dry-run the runner's MUST-rule validation on a definition (no AUT calls)."""
+    if not _enabled():
+        return _forbidden()
+    data = request.data if isinstance(request.data, dict) else {}
+    try:
+        case = tschema.case_from_dict(data.get("definition") or {})
+        errors = tschema.validate(case)
+    except Exception as exc:
+        return DrfResponse({"ok": False, "errors": [f"parse error: {exc}"]})
+    return DrfResponse({"ok": not errors, "errors": errors})
