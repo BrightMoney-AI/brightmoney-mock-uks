@@ -110,7 +110,7 @@ class ScenarioBundle(models.Model):
 
 
 class CallLog(models.Model):
-    """Append-only record of every received request (design §4.3)."""
+    """Append-only record of every received request (design §4.3). shouldn't be reset in any call or migration"""
 
     endpoint = models.ForeignKey(Endpoint, null=True, on_delete=models.SET_NULL)
     scenario = models.ForeignKey(Scenario, null=True, on_delete=models.SET_NULL)
