@@ -86,6 +86,7 @@
     <button data-tab="bundles" class="active">Bundles</button>
     <button data-tab="scenarios">Scenarios</button>
     <button data-tab="calls">Call Log</button>
+    <button data-tab="tests">Tests</button>
   </nav>
   <div class="spacer"></div>
   <button class="btn ghost sm" onclick="refresh()">↻ Refresh</button>
@@ -134,6 +135,24 @@
       <div class="card scrollx"><table id="countTable"></table></div>
     </div>
   </section>
+
+  <!-- TESTS -->
+  <section data-panel="tests" hidden>
+    <div class="card" style="padding:14px;margin-bottom:14px">
+      <div class="toolbar" style="margin:0">
+        <select id="tCsv" style="min-width:240px"></select>
+        <input id="tTag" placeholder="tag filter (optional)" style="width:170px">
+        <input id="tCases" placeholder="case ids (optional, comma-sep)" style="min-width:220px">
+        <input id="tMockBase" value="http://127.0.0.1" title="mock base URL the runner hits" style="width:180px">
+        <button class="btn" id="tRunBtn" onclick="runTest()">▶ Run suite</button>
+        <span class="hint" id="tHint"></span>
+      </div>
+    </div>
+    <div class="grid2" style="align-items:start;grid-template-columns:1fr 1.3fr">
+      <div class="card scrollx"><table id="runTable"></table></div>
+      <div class="card" id="runDetail" style="padding:0"><div class="empty">Select a run to see per-case results.</div></div>
+    </div>
+  </section>
 </main>
 
 <div class="toast" id="toast"></div>
@@ -179,7 +198,8 @@ function currentTab(){ return document.querySelector("nav button.active").datase
 function refresh(){ const t=currentTab();
   if(t==="bundles") loadBundles();
   else if(t==="scenarios") loadScenarios();
-  else loadCalls();
+  else if(t==="calls") loadCalls();
+  else if(t==="tests") loadTests();
 }
 
 // ---- modal -----------------------------------------------------------------
@@ -413,6 +433,87 @@ function renderCalls(d){
 }
 function toggleAuto(){ const on=document.getElementById("clAuto").checked;
   if(on){ AUTO=setInterval(loadCalls,3000); } else { clearInterval(AUTO); AUTO=null; } }
+
+// ============================ TESTS =========================================
+let CSVS_LOADED=false, TEST_POLL=null, OPEN_RUN=null;
+async function loadTests(){
+  if(!CSVS_LOADED){
+    try{ const d=await api("/test-csvs"); const sel=document.getElementById("tCsv");
+      sel.innerHTML=(d.csvs||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)}${c.cases!=null?` (${c.cases} cases)`:""}</option>`).join("");
+      CSVS_LOADED=true;
+    }catch(e){ toast("csvs: "+e.message,"err"); }
+  }
+  loadRuns();
+}
+async function loadRuns(){
+  try{ const d=await api("/testruns?limit=50"); renderRuns(d.runs||[]);
+    const active=(d.runs||[]).some(r=>r.status==="running"||r.status==="pending");
+    document.getElementById("tRunBtn").disabled=active;
+    document.getElementById("tHint").textContent=active?"a run is active — new runs are queued out (serialized)":"";
+    if(active && !TEST_POLL) TEST_POLL=setInterval(()=>{ loadRuns(); if(OPEN_RUN) viewRun(OPEN_RUN,true); },2500);
+    if(!active && TEST_POLL){ clearInterval(TEST_POLL); TEST_POLL=null; }
+  }catch(e){ toast("runs: "+e.message,"err"); }
+}
+function runStatusPill(s){ const m={passed:"st2",failed:"st5",error:"st5",running:"st4",pending:"st4",cancelled:"st4"};
+  return `<span class="pill ${m[s]||'st4'}">${s}</span>`; }
+function renderRuns(runs){
+  const t=document.getElementById("runTable"); t.innerHTML="";
+  t.append(el("tr",{},[el("th",{},"#"),el("th",{},"Suite"),el("th",{},"Status"),el("th",{class:"right"},"Pass/Total"),el("th",{},"When"),el("th",{class:"right"},"")]));
+  if(!runs.length){ t.append(el("tr",{},el("td",{colspan:6},el("div",{class:"empty"},"No runs yet. Pick a suite and hit Run.")))); return; }
+  for(const r of runs){
+    const acts=el("div",{class:"row-actions"},[
+      el("button",{class:"btn ghost sm",onclick:()=>viewRun(r.id)},"View"),
+      el("button",{class:"btn danger sm",onclick:()=>delRun(r.id)},"✕"),
+    ]);
+    const prog = r.total? `${r.passed}/${r.total}${r.failed?` · ${r.failed}✗`:""}` : (r.status==="running"?"…":"—");
+    t.append(el("tr",{},[
+      el("td",{class:"muted"},String(r.id)),
+      el("td",{class:"mono truncate",title:r.csv},r.csv.replace("data/","")),
+      el("td",{html:runStatusPill(r.status)}),
+      el("td",{class:"right mono"},prog),
+      el("td",{class:"muted nowrap"},(r.created_at||"").replace("T"," ").slice(5,19)),
+      el("td",{},acts),
+    ]));
+  }
+}
+async function runTest(){
+  const csv=document.getElementById("tCsv").value;
+  if(!csv) return toast("pick a suite","err");
+  const body={csv, tag:document.getElementById("tTag").value.trim(),
+    cases:document.getElementById("tCases").value.trim(), mock_base:document.getElementById("tMockBase").value.trim()};
+  try{ const r=await api("/testruns",{method:"POST",body:JSON.stringify(body)});
+    toast(`started run #${r.id} (${csv})`,"ok"); OPEN_RUN=r.id; loadRuns(); viewRun(r.id); }
+  catch(e){ toast("run: "+e.message,"err"); }
+}
+async function viewRun(id, quiet){
+  OPEN_RUN=id;
+  let r; try{ r=await api("/testruns/"+id); }catch(e){ if(!quiet)toast("view: "+e.message,"err"); return; }
+  const d=document.getElementById("runDetail"); d.style.padding="0";
+  const head=`<div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <b>Run #${r.id}</b> ${runStatusPill(r.status)}
+      <span class="mono muted">${esc(r.csv)}</span>
+      <span class="chip">${r.passed}/${r.total} pass${r.failed?` · ${r.failed} fail`:""}${r.skipped?` · ${r.skipped} skip`:""}</span>
+      ${r.tag?`<span class="chip run">tag:${esc(r.tag)}</span>`:""}
+      <span class="spacer"></span><span class="hint">${(r.finished_at||r.started_at||"").replace("T"," ").slice(0,19)}</span>
+    </div>`;
+  let rowsHtml="";
+  for(const res of (r.results||[])){
+    const p=res.skipped?'<span class="pill st4">SKIP</span>':res.passed?'<span class="pill st2">PASS</span>':'<span class="pill st5">FAIL</span>';
+    const errs=(res.errors&&res.errors.length)?`<div class="mono" style="color:var(--danger);font-size:11px;margin-top:3px;white-space:pre-wrap">${esc(res.errors.join("\n"))}</div>`:"";
+    rowsHtml+=`<tr><td class="mono">${esc(res.case_id)}</td><td>${p}</td><td class="right muted mono">${res.duration_ms}ms</td></tr>
+      ${errs?`<tr><td colspan="3" style="padding-top:0">${errs}</td></tr>`:""}`;
+  }
+  const errBox = r.error?`<div class="mono" style="padding:12px 14px;color:var(--danger);white-space:pre-wrap;font-size:11px;border-top:1px solid var(--border)">${esc(r.error)}</div>`:"";
+  const table = (r.results&&r.results.length)?
+    `<table><tr><th>Case</th><th>Result</th><th class="right">Time</th></tr>${rowsHtml}</table>`
+    : `<div class="empty">${r.status==="running"||r.status==="pending"?"running… results stream in as cases finish":"no results"}</div>`;
+  d.innerHTML=head+`<div class="scrollx">${table}</div>`+errBox;
+}
+async function delRun(id){ if(!confirm(`Delete run #${id} and its results?`))return;
+  try{ await api("/testruns/"+id,{method:"DELETE"}); toast("deleted run #"+id,"ok");
+    if(OPEN_RUN===id){ OPEN_RUN=null; document.getElementById("runDetail").innerHTML='<div class="empty">Select a run to see per-case results.</div>'; }
+    loadRuns(); }
+  catch(e){ toast("delete: "+e.message,"err"); } }
 
 // ---- boot ------------------------------------------------------------------
 async function health(){ try{ const f=await api("/formats"); document.getElementById("apihealth").textContent="admin API · "+(f.formats||[]).map(x=>x.name).join("/"); }

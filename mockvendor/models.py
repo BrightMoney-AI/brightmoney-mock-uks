@@ -109,6 +109,65 @@ class ScenarioBundle(models.Model):
         return self.bundle_id
 
 
+class TestRun(models.Model):
+    """One execution of a CSV test suite (design: dashboard-triggered runs).
+
+    Created ``pending`` by the API, driven to a terminal state by the
+    ``run_testsuite`` management command running as a detached subprocess so the
+    run survives gunicorn worker recycling. The row is the source of truth for
+    progress; the dashboard polls it.
+    """
+
+    STATUS = [
+        ("pending", "pending"), ("running", "running"),
+        ("passed", "passed"), ("failed", "failed"),
+        ("error", "error"), ("cancelled", "cancelled"),
+    ]
+
+    csv_path = models.CharField(max_length=255)          # relative to data/
+    tag = models.CharField(max_length=120, blank=True)   # optional tag filter
+    case_filter = models.TextField(blank=True)           # optional comma-sep case_ids
+    mock_base = models.CharField(max_length=255, default="http://127.0.0.1")
+    status = models.CharField(max_length=16, choices=STATUS, default="pending", db_index=True)
+    total = models.IntegerField(default=0)
+    passed = models.IntegerField(default=0)
+    failed = models.IntegerField(default=0)
+    skipped = models.IntegerField(default=0)
+    error = models.TextField(blank=True)                 # fatal error if the run itself blew up
+    log_path = models.CharField(max_length=255, blank=True)
+    pid = models.IntegerField(null=True, blank=True)
+    created_ip = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "mockvendor_testrun"
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"run<{self.id} {self.csv_path} {self.status}>"
+
+
+class TestResult(models.Model):
+    """Per-case outcome within a TestRun."""
+
+    run = models.ForeignKey(TestRun, related_name="results", on_delete=models.CASCADE)
+    case_id = models.CharField(max_length=120, db_index=True)
+    passed = models.BooleanField(default=False)
+    skipped = models.BooleanField(default=False)
+    errors = models.JSONField(default=list, blank=True)
+    duration_ms = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "mockvendor_testresult"
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"result<{self.run_id}:{self.case_id} {'PASS' if self.passed else 'FAIL'}>"
+
+
 class CallLog(models.Model):
     """Append-only record of every received request (design §4.3). shouldn't be reset in any call or migration"""
 
