@@ -707,7 +707,7 @@ function renderCaseEditor(){
       tags:tags.value.split(",").map(x=>x.trim()).filter(Boolean), notes:notes.value,
       seeds:d.seeds||[],
       call:{method:cm.value,url:curl.value.trim(),headers:parse(chd,{}),body:parse(cbody,{}),expect_status:ces.value?Number(ces.value):null},
-      call_steps:parse(steps,[]), repeat:d.repeat||{same_flow_id:1,distinct_ids:1,concurrent:1},
+      call_steps:d.call_steps||[], repeat:d.repeat||{same_flow_id:1,distinct_ids:1,concurrent:1},
       resp:{status:rs.value?Number(rs.value):null,body:parse(rb,{})}, calls:parse(calls,{}),
       db:{host:dbh.value.trim(),database:dbn.value.trim(),delay_ms:Number(dbd.value)||0}, db_checks:parse(dbc,[]),
       kafka:d.kafka||{bootstrap:""}, kafka_checks:d.kafka_checks||[],
