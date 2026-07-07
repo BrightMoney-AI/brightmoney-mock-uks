@@ -802,14 +802,24 @@ function renderCaseEditor(){
 }
 
 // ============================ TESTS =========================================
-let CSVS_LOADED=false, TEST_POLL=null, OPEN_RUN=null;
+let TEST_POLL=null, OPEN_RUN=null;
+// The run selector lists BOTH editable DB suites and on-disk CSV files. Each
+// option's value is prefixed with its source ("db:<suite>" / "csv:<file>") so
+// runTest() can send the right payload. Rebuilt every load so suites added in
+// the Test Cases tab show up here immediately.
 async function loadTests(){
-  if(!CSVS_LOADED){
-    try{ const d=await api("/test-csvs"); const sel=document.getElementById("tCsv");
-      sel.innerHTML=(d.csvs||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)}${c.cases!=null?` (${c.cases} cases)`:""}</option>`).join("");
-      CSVS_LOADED=true;
-    }catch(e){ toast("csvs: "+e.message,"err"); }
-  }
+  try{
+    const [cd, td] = await Promise.all([api("/test-csvs"), api("/testcases")]);
+    const sel=document.getElementById("tCsv");
+    const suites=(td.suites||[]).filter(Boolean);
+    const csvs=cd.csvs||[];
+    let html="";
+    if(suites.length) html+=`<optgroup label="DB suites (editable cases)">`+
+      suites.map(s=>`<option value="db:${esc(s)}">${esc(s)}</option>`).join("")+`</optgroup>`;
+    if(csvs.length) html+=`<optgroup label="CSV files (data/)">`+
+      csvs.map(c=>`<option value="csv:${esc(c.name)}">${esc(c.name)}${c.cases!=null?` (${c.cases} cases)`:""}</option>`).join("")+`</optgroup>`;
+    sel.innerHTML=html || `<option value="">— no DB suites or CSV files yet —</option>`;
+  }catch(e){ toast("suites/csvs: "+e.message,"err"); }
   loadRuns();
 }
 let RUN_OFFSET=0;
@@ -848,12 +858,14 @@ function renderRuns(d){
   renderPager(document.getElementById("runPager"), d, runs.length, (off)=>loadRuns(off));
 }
 async function runTest(){
-  const csv=document.getElementById("tCsv").value;
-  if(!csv) return toast("pick a suite","err");
-  const body={csv, tag:document.getElementById("tTag").value.trim(),
+  const raw=document.getElementById("tCsv").value;
+  if(!raw) return toast("pick a suite or CSV","err");
+  const i=raw.indexOf(":"), source=raw.slice(0,i), name=raw.slice(i+1);
+  const common={tag:document.getElementById("tTag").value.trim(),
     cases:document.getElementById("tCases").value.trim(), mock_base:document.getElementById("tMockBase").value.trim()};
+  const body = source==="db" ? {source:"db", suite:name, ...common} : {csv:name, ...common};
   try{ const r=await api("/testruns",{method:"POST",body:JSON.stringify(body)});
-    toast(`started run #${r.id} (${csv})`,"ok"); OPEN_RUN=r.id; loadRuns(); viewRun(r.id); }
+    toast(`started run #${r.id} (${source==="db"?"suite ":""}${name})`,"ok"); OPEN_RUN=r.id; loadRuns(); viewRun(r.id); }
   catch(e){ toast("run: "+e.message,"err"); }
 }
 async function viewRun(id, quiet){

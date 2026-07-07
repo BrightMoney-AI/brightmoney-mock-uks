@@ -48,6 +48,8 @@ class Command(BaseCommand):
                 if run.case_ids:
                     qs = qs.filter(id__in=run.case_ids)
                 tcs = list(qs)
+                if run.tag:
+                    tcs = [t for t in tcs if run.tag in (t.tags or [])]
                 if run.case_filter.strip():
                     wanted = {x.strip() for x in run.case_filter.replace("\n", ",").split(",") if x.strip()}
                     tcs = [t for t in tcs if t.case_id in wanted]
