@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,35 @@ class CaseResult:
     passed: bool
     errors: list[str] = field(default_factory=list)
     skipped: bool = False
+    # Per-call transcript captured while driving the AUT: one entry per request
+    # actually sent (initial call + each follow-up step), so the dashboard can
+    # show what the AUT returned. Bodies are truncated — this is for eyeballing,
+    # not archival.
+    responses: list = field(default_factory=list)
+
+
+_MAX_BODY_CHARS = 8000
+
+
+def _capture(label: str, method: str, url: str, resp) -> dict:
+    """Snapshot a response for display. Never raises — capture is best-effort."""
+    entry = {"label": label, "method": method, "url": url,
+             "status": getattr(resp, "status_code", None), "body": "", "truncated": False}
+    try:
+        text = resp.text or ""
+    except Exception as exc:
+        entry["body"] = f"<could not read body: {exc}>"
+        return entry
+    try:  # pretty-print JSON when possible; fall back to raw text
+        text = json.dumps(resp.json(), indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+    if len(text) > _MAX_BODY_CHARS:
+        entry["body"] = text[:_MAX_BODY_CHARS]
+        entry["truncated"] = True
+    else:
+        entry["body"] = text
+    return entry
 
 
 def _one_response(src: dict) -> dict:
@@ -236,8 +266,10 @@ class Runner:
         # Snapshot call counts BEFORE seeding/driving so the delta is accurate.
         baseline = self._get_call_counts()
         self.seed(case)
+        responses: list = []
         response = self.drive(case)
-        for step in case.call_steps:
+        responses.append(_capture("call 1 · initial", case.call["method"], case.call["url"], response))
+        for i, step in enumerate(case.call_steps):
             if step.get("delay_ms"):
                 time.sleep(step["delay_ms"] / 1000)
             step_body = _unflatten(step["body"])
@@ -249,15 +281,16 @@ class Runner:
                 headers=step["headers"],
                 timeout=30,
             )
+            responses.append(_capture(f"call {i + 2} · follow-up", step["method"], step["url"], step_resp))
             if step.get("expect_status") and step_resp.status_code != step["expect_status"]:
-                return CaseResult(case.case_id, passed=False,
+                return CaseResult(case.case_id, passed=False, responses=responses,
                                   errors=[f"call step {step['url']}: expected {step['expect_status']}, got {step_resp.status_code}"])
             response = step_resp
         if case.db_delay_ms:
             print(f"[verify] waiting {case.db_delay_ms} ms before DB/call verification...")
             time.sleep(case.db_delay_ms / 1000)
         errors = self.evaluate(case, response, call_baseline=baseline)
-        return CaseResult(case.case_id, passed=not errors, errors=errors)
+        return CaseResult(case.case_id, passed=not errors, errors=errors, responses=responses)
 
 
 def load_cases(csv_path: str) -> list[schema.Case]:

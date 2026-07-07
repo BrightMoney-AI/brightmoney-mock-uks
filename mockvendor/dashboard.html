@@ -593,6 +593,64 @@ const BLANK_CASE=()=>({case_id:"",flow_id:"flow-{{uuid:flow}}",id_key:"flow_id",
   resp:{status:200,body:{"error":"null","data.flow_id":"not_null"}},
   db:{host:"brightmomey_uks_2",database:"",delay_ms:2000}, db_checks:[], calls:{}, kafka:{bootstrap:""}, kafka_checks:[]});
 
+// ---- curl paste --> {method,url,headers,body} ----
+// Lets you paste a `curl` command to fill a call instead of hand-typing method,
+// url, headers (incl. auth tokens) and body. Best-effort parser: handles quotes,
+// line continuations, -X/-H/-d and friends; unknown flags are skipped, not fatal.
+function tokenizeCurl(s){
+  const t=[]; let cur="", q=null, has=false;
+  for(let i=0;i<s.length;i++){
+    const c=s[i];
+    if(q){
+      if(c==="\\"&&q==='"'&&i+1<s.length){ cur+=s[++i]; continue; }
+      if(c===q){ q=null; continue; }
+      cur+=c; continue;
+    }
+    if(c==='"'||c==="'"){ q=c; has=true; continue; }
+    if(c==="\\"&&(s[i+1]==="\n"||s[i+1]==="\r")){ i++; continue; }
+    if(/\s/.test(c)){ if(cur||has){t.push(cur);cur="";has=false;} continue; }
+    cur+=c;
+  }
+  if(cur||has) t.push(cur);
+  return t;
+}
+function parseCurl(raw){
+  const toks=tokenizeCurl((raw||"").trim());
+  let method="", url="", body=null; const headers={};
+  const dataFlags=new Set(["-d","--data","--data-raw","--data-binary","--data-ascii","--data-urlencode"]);
+  for(let i=0;i<toks.length;i++){
+    let a=toks[i];
+    if(a==="curl") continue;
+    if(a==="-X"||a==="--request"){ method=toks[++i]||method; continue; }
+    if(a.startsWith("-X")&&a.length>2){ method=a.slice(2); continue; }
+    if(a==="-H"||a==="--header"){ const h=toks[++i]||""; const idx=h.indexOf(":"); if(idx>0)headers[h.slice(0,idx).trim()]=h.slice(idx+1).trim(); continue; }
+    if(a==="-A"||a==="--user-agent"){ headers["User-Agent"]=toks[++i]||""; continue; }
+    if(a==="-b"||a==="--cookie"){ headers["Cookie"]=toks[++i]||""; continue; }
+    if(a==="-e"||a==="--referer"){ headers["Referer"]=toks[++i]||""; continue; }
+    if(a==="--url"){ url=toks[++i]||url; continue; }
+    if(dataFlags.has(a)){ const v=toks[++i]||""; body=body==null?v:body+"&"+v; continue; }
+    if(a.startsWith("-d")&&a.length>2){ const v=a.slice(2); body=body==null?v:body+"&"+v; continue; }
+    if(a.startsWith("-")) continue;          // unknown flag / bare option — skip
+    if(!url) url=a;                            // first bare token is the URL
+  }
+  if(!method) method = body!=null ? "POST" : "GET";
+  let bodyOut=body;
+  if(typeof body==="string"){ try{ bodyOut=JSON.parse(body); }catch{} }
+  return {method:method.toUpperCase(), url, headers, body: body==null?undefined:bodyOut};
+}
+// Reveal-on-click textarea + apply button; onApply({method,url,headers,body}).
+function curlBox(onApply){
+  const wrap=el("div",{style:"margin:2px 0 10px"});
+  const ta=el("textarea",{rows:4,placeholder:"paste a curl command…  e.g. curl -X POST https://… -H 'Authorization: Bearer …' -d '{\"k\":1}'",style:"display:none"});
+  const toggle=el("button",{class:"btn ghost sm",type:"button"},"⎘ paste curl");
+  const apply=el("button",{class:"btn sm",type:"button",style:"display:none;margin-left:6px"},"apply curl → fields");
+  toggle.onclick=()=>{ const show=ta.style.display==="none"; ta.style.display=show?"":"none"; apply.style.display=show?"":"none"; if(show)ta.focus(); };
+  apply.onclick=()=>{ const p=parseCurl(ta.value); if(!p.url) return toast("couldn't find a URL in that curl","err");
+    onApply(p); ta.style.display="none"; apply.style.display="none"; ta.value=""; toast("filled from curl — edit as needed","ok"); };
+  wrap.append(toggle,apply,el("div",{style:"margin-top:6px"},ta));
+  return wrap;
+}
+
 let EDIT_ID=null, EDIT_DEF=null;
 async function openCaseEditor(id){
   EDIT_ID=id||null;
@@ -658,8 +716,11 @@ function renderCaseEditor(){
         curl=el("input",{value:(d.call||{}).url||"",placeholder:"http://<aut-host>/api/v1/kyc/start"}),
         ces=el("input",{type:"number",value:(d.call||{}).expect_status??200,style:"width:90px"}),
         chd=ta((d.call||{}).headers||{},3), cbody=ta((d.call||{}).body||{},6);
+  c1card.append(curlBox(p=>{ cm.value=p.method; curl.value=p.url;
+    if(Object.keys(p.headers).length) chd.value=JSON.stringify(p.headers,null,2);
+    if(p.body!==undefined) cbody.value=typeof p.body==="string"?p.body:JSON.stringify(p.body,null,2); }));
   c1card.append(el("div",{class:"grid3"},[mk("method",cm),mk("url",curl,"the AUT endpoint this test drives"),mk("expect_status",ces,"HTTP status this call must return")]));
-  c1card.append(el("div",{class:"grid2"},[mk("headers (JSON)",chd),mk("body (JSON — dotted keys nest automatically, e.g. \"data.flow_id\")",cbody)]));
+  c1card.append(el("div",{class:"grid2"},[mk("headers (JSON — add Authorization / tokens here)",chd),mk("body (JSON — dotted keys nest automatically, e.g. \"data.flow_id\")",cbody)]));
   body.append(c1card);
 
   const stepWrap=el("div",{}); body.append(stepWrap);
@@ -677,9 +738,12 @@ function renderCaseEditor(){
       const sync=()=>{ s.method=m.value;s.url=u.value;s.expect_status=es.value?Number(es.value):null;s.delay_ms=Number(dl.value)||0;
         try{s.headers=JSON.parse(hd.value);}catch{} try{s.body=JSON.parse(bd.value);}catch{} };
       [m,u,es,dl].forEach(n=>n.addEventListener("change",sync)); hd.addEventListener("change",sync); bd.addEventListener("change",sync);
+      card.append(curlBox(p=>{ m.value=p.method; u.value=p.url;
+        if(Object.keys(p.headers).length) hd.value=JSON.stringify(p.headers,null,2);
+        if(p.body!==undefined) bd.value=typeof p.body==="string"?p.body:JSON.stringify(p.body,null,2); sync(); }));
       card.append(el("div",{class:"grid3"},[mk("method",m),mk("url",u),mk("expect_status",es,"leave blank to not check")]));
       card.append(mk("delay before this call (ms)",dl,"wait time after the previous call, e.g. letting an async provider settle"));
-      card.append(el("div",{class:"grid2"},[mk("headers (JSON)",hd),mk("body (JSON, dotted keys ok)",bd)]));
+      card.append(el("div",{class:"grid2"},[mk("headers (JSON — add Authorization / tokens here)",hd),mk("body (JSON, dotted keys ok)",bd)]));
       card.append(el("div",{style:"text-align:right;margin-top:6px"},del));
       stepWrap.append(card);
     });
@@ -801,8 +865,23 @@ async function viewRun(id, quiet){
   for(const res of (r.results||[])){
     const p=res.skipped?'<span class="pill st4">SKIP</span>':res.passed?'<span class="pill st2">PASS</span>':'<span class="pill st5">FAIL</span>';
     const errs=(res.errors&&res.errors.length)?`<div class="mono" style="color:var(--danger);font-size:11px;margin-top:3px;white-space:pre-wrap">${esc(res.errors.join("\n"))}</div>`:"";
+    const resps=(res.responses||[]);
+    let respHtml="";
+    if(resps.length){
+      respHtml=resps.map(rr=>{
+        const st = rr.status==null ? '<span class="pill st4">—</span>' : statusPill(rr.status);
+        const body = esc(rr.body||"")+(rr.truncated?"\n… (truncated)":"");
+        return `<details style="margin:4px 0">
+          <summary style="cursor:pointer;list-style:none">${st}
+            <span class="muted" style="font-size:11px">${esc(rr.label||"")}</span>
+            <span class="mono" style="font-size:11px">${esc(rr.method||"")} ${esc(rr.url||"")}</span></summary>
+          <pre class="mono" style="white-space:pre-wrap;overflow:auto;max-height:320px;margin:6px 0 0;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:11px">${body||'<span class="muted">(empty body)</span>'}</pre>
+        </details>`;
+      }).join("");
+    }
     rowsHtml+=`<tr><td class="mono">${esc(res.case_id)}</td><td>${p}</td><td class="right muted mono">${res.duration_ms}ms</td></tr>
-      ${errs?`<tr><td colspan="3" style="padding-top:0">${errs}</td></tr>`:""}`;
+      ${errs?`<tr><td colspan="3" style="padding-top:0">${errs}</td></tr>`:""}
+      ${respHtml?`<tr><td colspan="3" style="padding-top:0">${respHtml}</td></tr>`:""}`;
   }
   const errBox = r.error?`<div class="mono" style="padding:12px 14px;color:var(--danger);white-space:pre-wrap;font-size:11px;border-top:1px solid var(--border)">${esc(r.error)}</div>`:"";
   const table = (r.results&&r.results.length)?

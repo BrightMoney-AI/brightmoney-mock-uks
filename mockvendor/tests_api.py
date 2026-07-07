@@ -73,7 +73,7 @@ def _run_json(run: TestRun, with_results: bool = False) -> dict:
     if with_results:
         d["results"] = [
             {"case_id": r.case_id, "passed": r.passed, "skipped": r.skipped,
-             "errors": r.errors, "duration_ms": r.duration_ms}
+             "errors": r.errors, "responses": r.responses, "duration_ms": r.duration_ms}
             for r in run.results.all()
         ]
     return d

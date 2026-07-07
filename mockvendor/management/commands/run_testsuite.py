@@ -78,7 +78,8 @@ class Command(BaseCommand):
                     is_skip = getattr(res, "skipped", False)
                     TestResult.objects.create(
                         run=run, case_id=res.case_id, passed=res.passed,
-                        skipped=is_skip, errors=res.errors or [], duration_ms=dur)
+                        skipped=is_skip, errors=res.errors or [],
+                        responses=getattr(res, "responses", []) or [], duration_ms=dur)
                     if is_skip:
                         skipped += 1
                     elif res.passed:

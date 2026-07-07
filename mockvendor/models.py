@@ -187,6 +187,9 @@ class TestResult(models.Model):
     passed = models.BooleanField(default=False)
     skipped = models.BooleanField(default=False)
     errors = models.JSONField(default=list, blank=True)
+    # Per-call transcript captured by the runner (initial call + each step):
+    # [{label, method, url, status, body, truncated}]. Bodies are truncated.
+    responses = models.JSONField(default=list, blank=True)
     duration_ms = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

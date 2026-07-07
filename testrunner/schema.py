@@ -500,8 +500,9 @@ def validate(case: Case) -> list[str]:
         errs.append("case_id is required")
     if not case.call["url"]:
         errs.append("call.url is required")
-    if not case.seeds:
-        errs.append("at least one seed group (seed1.*) is required")
+    # Seeds are optional: a case may just drive the AUT and validate the
+    # response (or just fire a call). Seed groups that ARE present are still
+    # validated below.
 
     names = [s.scenario for s in case.seeds]
     if len(names) != len(set(names)):
