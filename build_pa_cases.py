@@ -141,6 +141,15 @@ LN_SOFT_FAIL = (
     '{"ComprehensiveVerificationIndex":10,"NameAddressSSN":{"RiskCode":7},'
     '"NameAddressPhone":{"RiskCode":12}}}]}'
 )
+# CVI 10 (< CVI_THRESHOLD 30) + NameAddressSSN RiskCode 1 (in NAS_SSN_FAIL_CODES
+# {0,1,2,3,5,8}) → FAIL_SSN. Distinct from LN_SOFT_FAIL above: FAIL_SSN is the
+# only LexisNexis status the ESCALATE_SSN trigger on lexisnexis_primary_waterfall
+# accepts, so PA-012 needs this exact body, not the non-SSN variant.
+LN_FAIL_SSN = (
+    'status=200;raw={"Records":[{"InstantIDIndividual":'
+    '{"ComprehensiveVerificationIndex":10,"NameAddressSSN":{"RiskCode":1},'
+    '"NameAddressPhone":{"RiskCode":12}}}]}'
+)
 # RiskIndicators code "IT" is in LexisNexisEvaluator's HARD_BLOCK_CODES, which
 # short-circuits ahead of the CVI check → FAIL_HARD_BLOCK → flow FAILED.
 # (A low CVI alone does NOT hard-block; this mirrors the existing TC-003 body.)
@@ -184,8 +193,13 @@ def seed_row(case_id, path, scenario, resp):
 
 
 def base(case_id, notes, seed_path, seed_scenario, seed_resp, *,
-         db_delay=8000, tags="pa-screening"):
-    """First row of a case: metadata + /start call + the first seed."""
+         db_delay=8000, tags="pa-screening", kyc_type="DM"):
+    """First row of a case: metadata + /start call + the first seed.
+
+    *kyc_type* selects the flow graph. "DM" -> enrollment_waterfall (IDology
+    initial, every escalation returning to IDology). The PA_* types route to the
+    graphs that can actually reach PA_STANDALONE — see seed_pa_graphs.sh.
+    """
     return row(**{
         "case_id": case_id, "layer": "5-BusinessE2E", "kind": "e2e",
         "flow_id": FLOW, "tags": tags,
@@ -194,7 +208,7 @@ def base(case_id, notes, seed_path, seed_scenario, seed_resp, *,
         "call.body.meta.bright_uid": "{{uuid:uid}}",
         "call.body.meta.request_id": "{{uuid:rid}}",
         "call.body.data.flow_id": FLOW,
-        "call.body.data.kyc_type": "DM",
+        "call.body.data.kyc_type": kyc_type,
         "call.body.data.client": "app",
         "call.expect_status": "200",
         "resp.status": "200", "resp.body": "error=null;data.flow_id=not_null",
@@ -203,19 +217,19 @@ def base(case_id, notes, seed_path, seed_scenario, seed_resp, *,
     })
 
 
-def add_status_details_then_resume(r, *, persona_verified="'PASS'", extra=None):
+def add_status_details_then_resume(r, *, persona_verified="'PASS'", extra=None, kyc_type="DM"):
     """Attach call2=/status_details (opens Persona) and call3=/resume."""
     r.update({
         "call2.method": "POST", "call2.url": STATUS_DETAILS, "call2.headers": JSON_H,
         "call2.expect_status": "200", "call2.delay_ms": "3000",
         "call2.body.meta.bright_uid": "{{uuid:uid}}",
         "call2.body.meta.request_id": "{{uuid:rid_sd}}",
-        "call2.body.data.flow_id": FLOW, "call2.body.data.kyc_type": "DM",
+        "call2.body.data.flow_id": FLOW, "call2.body.data.kyc_type": kyc_type,
         "call3.method": "POST", "call3.url": RESUME, "call3.headers": JSON_H,
         "call3.expect_status": "200", "call3.delay_ms": "1500",
         "call3.body.meta.bright_uid": "{{uuid:uid}}",
         "call3.body.meta.request_id": "{{uuid:rid2}}",
-        "call3.body.data.flow_id": FLOW, "call3.body.data.kyc_type": "DM",
+        "call3.body.data.flow_id": FLOW, "call3.body.data.kyc_type": kyc_type,
         "call3.body.data.client": "USM", "call3.body.data.in_sync": "true",
         "call3.body.data.additional_data_params.persona_kyc_verified": persona_verified,
     })
@@ -454,6 +468,97 @@ pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", provider="IDOLOGY")
 flow_check(r, PASSED)
 r.update({"repeat.same_flow_id": "3", "calls": CALLS_IDL_ONLY})
 rows += [r, seed_row("PA-010", P_PROFILE, "usm-profile-default", PROFILE)]
+
+
+# =========================================================================
+# The two PA_STANDALONE cases below run on kyc_type LN_PRIMARY ->
+# "lexisnexis_primary_waterfall", copied verbatim from prod graph 5:
+#
+#   lexisnexis(initial) --FAIL_SSN|FAIL_NON_SSN--> idology --any FAIL*-->
+#   persona_idv --{lexisnexis FAIL_SSN, persona PASS}/ESCALATE_SSN--> lexisnexis
+#
+# The load-bearing difference from dev's enrollment_waterfall: the ESCALATE_SSN
+# edge lands on LEXISNEXIS, not IDology. On enrollment_waterfall every escalation
+# returns to IDology, so a PII correction is always re-screened by IDology and
+# the fingerprint always matches — which is why PA_STANDALONE is structurally
+# unreachable there and why PA-005 can only ever assert reuse.
+# =========================================================================
+
+# =========================================================================
+# PA-011 — IDology NEVER called -> STANDALONE
+#
+#   LexisNexis is the initial step and passes outright, so the flow terminates
+#   PASSED without IDology ever being invoked. pa_check finds zero
+#   IdologyKycVerification rows and must place a real ExpectID PA call.
+# =========================================================================
+r = base("PA-011",
+         "LexisNexis primary passes outright: IDology never called -> real ExpectID PA standalone call.",
+         P_LN_TOKEN, "ln-token", LN_TOKEN, kyc_type="LN_PRIMARY")
+pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS")
+# Nothing may exist in the IDology table — that absence IS the precondition that
+# forces the standalone path, so assert it rather than inferring it.
+idl_check(r, "__absent__=true")
+flow_check(r, PASSED)
+# IDology explicitly zero. One profile fetch: only one step ever asks for params.
+r["calls"] = f"{P_PROFILE}=1;{P_LN_SEARCH}=1;{P_IDOLOGY}=0"
+rows += [
+    r,
+    seed_row("PA-011", P_LN_SEARCH, "ln-pass", LN_PASS),
+    seed_row("PA-011", P_PROFILE, "usm-profile-default", PROFILE),
+]
+
+# =========================================================================
+# PA-012 — IDology screened PII_A, flow passed on PII_B -> STANDALONE
+#
+#   lexisnexis(FAIL_SSN, PII_A) -> idology(FAIL_SSN, screens PII_A)
+#     -> persona(PASS) -> ESCALATE_SSN parks back at LEXISNEXIS
+#     -> /resume #2 supplies corrected ssn + address (PII_B)
+#     -> lexisnexis re-runs (sequence: 2nd response PASSES) on PII_B
+#     -> terminal PASSED, primary_provider LEXISNEXIS
+#
+# IDology's only screening covered PII_A, so the PII_B fingerprint misses and a
+# standalone call is required. This is the exact case that cannot occur on
+# enrollment_waterfall (see the block comment above).
+# =========================================================================
+r = base("PA-012",
+         "PII corrected then LexisNexis terminal: IDology screened the OLD PII -> standalone call.",
+         P_LN_TOKEN, "ln-token", LN_TOKEN,
+         db_delay=15000, kyc_type="LN_PRIMARY")
+add_status_details_then_resume(r, kyc_type="LN_PRIMARY")
+r.update({
+    "call4.method": "POST", "call4.url": RESUME, "call4.headers": JSON_H,
+    "call4.expect_status": "200", "call4.delay_ms": "3000",
+    "call4.body.meta.bright_uid": "{{uuid:uid}}",
+    "call4.body.meta.request_id": "{{uuid:rid3}}",
+    "call4.body.data.flow_id": FLOW, "call4.body.data.kyc_type": "LN_PRIMARY",
+    "call4.body.data.client": "USM", "call4.body.data.in_sync": "true",
+    "call4.body.data.additional_data_params.ssn": "'987654321'",
+    "call4.body.data.additional_data_params.address": "999 Different Ave",
+    "call4.body.data.additional_data_params.city": "Dallas",
+    "call4.body.data.additional_data_params.state_short": "TX",
+    "call4.body.data.additional_data_params.zip": "75201",
+})
+pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS")
+# The IDology row must exist AND be determined — that is what proves the
+# standalone call was forced by a fingerprint MISMATCH rather than by the absence
+# of any screening at all (which is PA-011's case, not this one).
+idl_check(r, "pa_determined=True;pa_pii_fingerprint=not_null")
+flow_check(r, PASSED)
+# LexisNexis runs twice (initial + post-escalation), IDology exactly once — the
+# escalation target on this graph is LexisNexis. Profile fetch count is >=2 and
+# left loose: each step re-fetches for the param keys it alone declares, and
+# persona's key set is not worth pinning here.
+r["calls"] = f"{P_PROFILE}>=2;{P_IDOLOGY}=1;{P_LN_SEARCH}=2;{P_PERSONA}>=1"
+rows += [
+    r,
+    # 2nd row for the SAME (path, scenario) makes this a SEQUENCE: LexisNexis
+    # call 1 is FAIL_SSN, call 2 (after the escalation resume) passes on PII_B.
+    seed_row("PA-012", P_LN_SEARCH, "ln-fail-ssn-then-pass", LN_FAIL_SSN),
+    seed_row("PA-012", P_LN_SEARCH, "ln-fail-ssn-then-pass", LN_PASS),
+    seed_row("PA-012", P_IDOLOGY, "idology-fail-clear", IDL_FAIL_CLEAR),
+    seed_row("PA-012", P_PERSONA, "persona-create", PERSONA_CREATE),
+    seed_row("PA-012", P_PROFILE, "usm-profile-default", PROFILE),
+]
 
 
 out = "data/pa_screening_cases.csv"
