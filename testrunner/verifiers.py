@@ -29,9 +29,10 @@ _FLOW_JOIN = {
     # PA screening result — one row per PASSED flow (UNIQUE on kyc_flow_id).
     "kyc_pa_screening_results": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
     # IDology IQ calls hang off KycRequest (many rows per flow: retries +
-    # re-entries), which is where the flow_id actually lives.
+    # re-entries), which is where the flow_id actually lives. Attribution is a
+    # loose kyc_request_pid UUID, not a FK — match on pid, not id.
     "idology_kyc_verification": (
-        "kyc_request_id IN (SELECT id FROM uks_kyc_request WHERE flow_id={ph})"
+        "kyc_request_pid IN (SELECT pid FROM uks_kyc_request WHERE flow_id={ph})"
     ),
     "escalation_log": (
         "step_pid IN (SELECT pid FROM uks_flow_decision_step "
