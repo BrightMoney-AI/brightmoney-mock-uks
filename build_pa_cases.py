@@ -285,7 +285,13 @@ def flow_check(r, status, slot=SLOT_FLOW):
 
 
 CALLS_IDL_ONLY = f"{P_PROFILE}=1;{P_IDOLOGY}=1"
-CALLS_IDL_LN = CALLS_IDL_ONLY + f";{P_LN_SEARCH}=1"
+# The profile is fetched TWICE on any flow that advances past IDology: IDology's
+# SOURCE_PARAMS ask for "state_short", LexisNexis's for "state" — different
+# UserProfile param_keys — and get_missing_dataset only persists the params the
+# current step declared missing. So step 2 finds "state" absent and re-fetches.
+# Asserted exactly (not >=1) so a regression that stops caching profile params
+# and re-fetches per step still fails this.
+CALLS_IDL_LN = f"{P_PROFILE}=2;{P_IDOLOGY}=1;{P_LN_SEARCH}=1"
 # ">=1" must NOT be preceded by "=" — parse_calls_cell's greedy regex would fold
 # the "=" into the path and the assertion could never match.
 CALLS_IDL_LN_PERSONA = CALLS_IDL_LN + f";{P_PERSONA}>=1"
@@ -385,7 +391,7 @@ flow_check(r, PASSED)
 # idology runs TWICE here (initial call + the post-escalation re-run), so the
 # count differs from every other case.
 r["calls"] = (
-    f"{P_PROFILE}=1;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=1"
+    f"{P_PROFILE}=2;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=1"
 )
 rows += [
     r,
