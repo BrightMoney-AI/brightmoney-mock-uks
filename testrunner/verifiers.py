@@ -26,11 +26,27 @@ _FLOW_JOIN = {
     "uks_flow_decision_step": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
     "uks_user_profile":       "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
     "uks_kyc_data_fetch":     "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    # PA screening result — one row per PASSED flow (UNIQUE on kyc_flow_id).
+    "kyc_pa_screening_results": "kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph})",
+    # IDology IQ calls hang off KycRequest (many rows per flow: retries +
+    # re-entries), which is where the flow_id actually lives.
+    "idology_kyc_verification": (
+        "kyc_request_id IN (SELECT id FROM uks_kyc_request WHERE flow_id={ph})"
+    ),
     "escalation_log": (
         "step_pid IN (SELECT pid FROM uks_flow_decision_step "
         "WHERE kyc_flow_id IN (SELECT id FROM uks_kyc_flow WHERE flow_id={ph}))"
     ),
 }
+
+# Sentinel in a dbN.expect cell asserting that NO row matches the where clause
+# (e.g. "a FAILED flow must never get a PA screening row"). Written as
+# ``dbN.expect=__absent__=true``.
+_ABSENT_KEY = "__absent__"
+
+
+def _is_absent_check(expect: dict) -> bool:
+    return str(expect.get(_ABSENT_KEY, "")).lower() in ("1", "true", "yes")
 
 
 def _build_clause(table: str, where: dict, ph: str) -> tuple[str, list]:
@@ -99,6 +115,10 @@ def _any_row_matches(rows: list, expect: dict) -> tuple[bool, list[str]]:
 
 def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict,
                      timeout_s: float = 20.0, poll_interval_s: float = 2.0) -> list[str]:
+    # An absent-check is never retried: polling can only turn a pass into a fail,
+    # and "the row has not appeared YET" is not the assertion. Give the AUT time
+    # to finish via the case's db.delay_ms instead.
+    absent = _is_absent_check(expect)
     deadline = time.monotonic() + timeout_s
     while True:
         errs: list[str] = []
@@ -107,7 +127,10 @@ def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict,
         try:
             clause, params = _build_clause(table, where, "?")
             raw_rows = con.execute(f"SELECT * FROM {table} WHERE {clause}", params).fetchall()
-            if not raw_rows:
+            if absent:
+                if raw_rows:
+                    errs = [f"db: expected NO row in {table} where {where}, found {len(raw_rows)}"]
+            elif not raw_rows:
                 errs = [f"db: no row in {table} where {where}"]
             else:
                 rows = [dict(zip(r.keys(), tuple(r))) for r in raw_rows]
@@ -116,7 +139,7 @@ def verify_db_sqlite(sqlite_path: str, table: str, where: dict, expect: dict,
                     errs = [e.replace("col ", f"{table}.") for e in errs]
         finally:
             con.close()
-        if not errs or time.monotonic() >= deadline:
+        if not errs or absent or time.monotonic() >= deadline:
             return errs
         time.sleep(poll_interval_s)
 
@@ -128,6 +151,8 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
     except ImportError:
         return ["db: psycopg not installed — install 'psycopg[binary]' or use --aut-sqlite"]
     host, _, port = dsn.partition(":")
+    # See verify_db_sqlite: absent-checks are single-shot, never polled.
+    absent = _is_absent_check(expect)
     deadline = time.monotonic() + timeout_s
     while True:
         errs: list[str] = []
@@ -138,14 +163,19 @@ def verify_db_postgres(dsn: str, database: str, table: str, where: dict, expect:
                 cur.execute(f"SELECT * FROM {table} WHERE {clause}", params)
                 cols = [d.name for d in cur.description]
                 raw_rows = cur.fetchall()
-                if not raw_rows:
+                if absent:
+                    if raw_rows:
+                        errs = [
+                            f"db: expected NO row in {table} where {where}, found {len(raw_rows)}"
+                        ]
+                elif not raw_rows:
                     errs = [f"db: no row in {table} where {where}"]
                 else:
                     rows = [dict(zip(cols, r)) for r in raw_rows]
                     matched, errs = _any_row_matches(rows, expect)
                     if not matched:
                         errs = [e.replace("col ", f"{table}.") for e in errs]
-        if not errs or time.monotonic() >= deadline:
+        if not errs or absent or time.monotonic() >= deadline:
             return errs
         time.sleep(poll_interval_s)
 
