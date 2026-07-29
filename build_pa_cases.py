@@ -121,6 +121,16 @@ IDL_FAIL_CLEAR = (
     "<message>SSN Does Not Match</message></results>"
     "</response>"
 )
+# IDology FAIL whose result code is in NO FAIL_*_CODES set, so it collapses to an
+# unqualified "FAIL". On enrollment_waterfall no idology->* edge matches a plain
+# FAIL, so the flow goes terminal FAILED at /start (used by PA-007).
+IDL_FAIL_UNCLASSIFIED = (
+    'status=200;format=xml;raw=<?xml version="1.0"?><response>'
+    "<id-number>3571500004</id-number>"
+    "<summary-result><key>id.failure</key><message>FAIL</message></summary-result>"
+    "<results><key>result.match</key><message>ID Located</message></results>"
+    "</response>"
+)
 # IDology API-level error → parser sets .error → pa_determined=False (nothing
 # was screened) AND status collapses to FAIL, so the graph still routes onward.
 IDL_ERROR = (
@@ -257,8 +267,18 @@ SLOT_FLOW = 3
 STANDALONE_STATUS = "/^(ERROR|COMPLETED)$/"
 
 
+# SHA-256 of the PA-relevant fields (name + address) for the two PII sets these
+# cases use. Computed by idology.pa_fingerprint.pa_fingerprint() and confirmed
+# against the values dev actually wrote. Pinned as literals rather than
+# "not_null" so a case can assert WHICH PII was screened, not merely that
+# something was: FP_PII_A proves an SSN-only correction did NOT move the
+# fingerprint, FP_PII_B proves an address change DID.
+FP_PII_A = "10578ed7545bb9159c7da8445b3620e45fa891ae608d9ac74eadb4f213dd2978"
+FP_PII_B = "283f5e72676299ec0fda76a71d058e8e00a43497993823d520fe203baf9d215f"
+
+
 def pa_checks(r, *, source, status="COMPLETED", hit=None, review=None,
-              provider=None, request_id=None, extra=(), slot=SLOT_PA):
+              provider=None, request_id=None, fingerprint=None, extra=(), slot=SLOT_PA):
     """Add the kyc_pa_screening_results expectation (one check per table)."""
     exp = [f"screening_source={source}", f"screening_status={status}"]
     if hit is not None:
@@ -269,7 +289,7 @@ def pa_checks(r, *, source, status="COMPLETED", hit=None, review=None,
         exp.append(f"primary_provider={provider}")
     if request_id is not None:
         exp.append(f"pa_request_id={request_id}")
-    exp.append("pa_pii_fingerprint=not_null")
+    exp.append(f"pa_pii_fingerprint={fingerprint or 'not_null'}")
     exp.extend(extra)
     r.update({
         f"db{slot}.table": PA_TABLE,
@@ -400,7 +420,9 @@ r.update({
     "call4.body.data.additional_data_params.state_short": "TX",
     "call4.body.data.additional_data_params.zip": "75201",
 })
-pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="IDOLOGY")
+# FP_PII_B: the address change MOVED the fingerprint, and the screening row
+# carries the new one — i.e. reuse matched the 2nd idology call, not the 1st.
+pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="IDOLOGY", fingerprint=FP_PII_B)
 flow_check(r, PASSED)
 # idology runs TWICE here (initial call + the post-escalation re-run), so the
 # count differs from every other case.
@@ -419,6 +441,79 @@ rows += [
 ]
 
 # =========================================================================
+# PA-006 — SSN-only correction does NOT move the fingerprint -> REUSE
+#
+# Same escalation round-trip as PA-005, but /resume #2 supplies ONLY a corrected
+# ssn — no address change. PA_SCREENING_FIELDS covers name + address only, so the
+# fingerprint must come out IDENTICAL to the pre-correction one (FP_PII_A) and the
+# screening is reused without an avoidable standalone call.
+#
+# This is the one e2e case that pins the fingerprint's field scope: paired with
+# PA-005 (address changed -> FP_PII_B) it proves SSN is excluded and address is
+# included. If someone widens PA_SCREENING_FIELDS to include ssn/dob, this case
+# fails and PA-005 still passes.
+#
+# NOTE: the original PA-006 died at /start because its idology seed used
+# <key>result.match</key>, which classifies as an unqualified FAIL — and
+# enrollment_waterfall has no idology->* edge for a plain FAIL (only the five
+# FAIL_* categories), so the flow went terminal FAILED and /resume then correctly
+# returned 400 KYC_FLOW_COMPLETED. IDL_FAIL_CLEAR below uses
+# resultcode.ssn.does.not.match -> FAIL_SSN, which does have an edge.
+# =========================================================================
+r = base("PA-006",
+         "SSN-only correction at resume: fingerprint unchanged (name+address only) -> reuse.",
+         P_IDOLOGY, "idology-fail-then-pass", IDL_FAIL_CLEAR, db_delay=12000)
+add_status_details_then_resume(r)
+r.update({
+    "call4.method": "POST", "call4.url": RESUME, "call4.headers": JSON_H,
+    "call4.expect_status": "200", "call4.delay_ms": "3000",
+    "call4.body.meta.bright_uid": "{{uuid:uid}}",
+    "call4.body.meta.request_id": "{{uuid:rid3}}",
+    "call4.body.data.flow_id": FLOW, "call4.body.data.kyc_type": "DM",
+    "call4.body.data.client": "USM", "call4.body.data.in_sync": "true",
+    # SSN only — deliberately no address/city/state/zip.
+    "call4.body.data.additional_data_params.ssn": "'987654321'",
+})
+pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="IDOLOGY", fingerprint=FP_PII_A)
+flow_check(r, PASSED)
+r["calls"] = f"{P_PROFILE}=2;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=1"
+rows += [
+    r,
+    seed_row("PA-006", P_IDOLOGY, "idology-fail-then-pass", IDL_PASS_CLEAR),
+    seed_row("PA-006", P_LN_TOKEN, "ln-token", LN_TOKEN),
+    seed_row("PA-006", P_LN_SEARCH, "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
+    seed_row("PA-006", P_PERSONA, "persona-create", PERSONA_CREATE),
+    seed_row("PA-006", P_PROFILE, "usm-profile-default", PROFILE),
+]
+
+# =========================================================================
+# PA-007 — /resume on a terminal flow is REJECTED, and no screening row appears
+#
+# Repurposed. The original asserted primary_provider=PERSONA, which no graph can
+# produce: a Persona PASS always fires an ESCALATE_* edge (back to idology on
+# enrollment_waterfall / idology_primary_waterfall, to lexisnexis on
+# lexisnexis_primary_waterfall), so Persona is never the terminal provider.
+#
+# What it actually exercised — and now asserts on purpose — is the terminal-state
+# guard: an unqualified idology FAIL has no outgoing edge on enrollment_waterfall,
+# so the flow is FAILED the moment /start completes. /status_details still reads
+# 200, but /resume must be refused with 400 KYC_FLOW_COMPLETED (terminal states
+# only transition to themselves), and PA screening must never run.
+# =========================================================================
+r = base("PA-007",
+         "Unqualified idology FAIL is terminal: /resume refused with 400, no PA screening.",
+         P_IDOLOGY, "idology-fail-unclassified", IDL_FAIL_UNCLASSIFIED)
+add_status_details_then_resume(r)
+# The point of the case: this /resume is EXPECTED to be rejected.
+r["call3.expect_status"] = "400"
+# Poll for FAILED first (slot 1), then the single-shot absent check (slot 2) —
+# otherwise "no screening row" could pass just because nothing has run yet.
+flow_check(r, FAILED, slot=SLOT_PA)
+pa_absent(r, slot=SLOT_IDL)
+# No LexisNexis and no Persona leg at all: the flow never left the idology step.
+r["calls"] = CALLS_IDL_ONLY
+rows += [r, seed_row("PA-007", P_PROFILE, "usm-profile-default", PROFILE)]
+
 # =========================================================================
 # PA-008 — FAILED flow -> NO screening row at all (negative case)
 # =========================================================================
