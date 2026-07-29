@@ -46,11 +46,19 @@ HEADER = [
 ]
 
 DB = "brightmomey_uks_2"
-START = "http://10.0.32.30/api/v1/kyc/start"
-STATUS_DETAILS = "http://10.0.32.30/api/v1/kyc/status_details/"
-RESUME = "http://10.0.32.30/api/v1/kyc/resume"
+# AUT base URL — change here only; every call column derives from it.
+AUT = "http://10.0.63.105"
+START = f"{AUT}/api/v1/kyc/start"
+STATUS_DETAILS = f"{AUT}/api/v1/kyc/status_details/"
+RESUME = f"{AUT}/api/v1/kyc/resume"
 JSON_H = "Content-Type=application/json"
 FLOW = "flow-{{uuid:flow}}"
+
+# uks.models.KycFlowStatus values — the terminal success value is "PASSED", NOT
+# "PASS". (data/kyc_cases.csv asserts status=PASS in 14 places; those assertions
+# can never match and are silently broken.)
+PASSED = "PASSED"
+FAILED = "FAILED"
 
 # --- mock bodies -----------------------------------------------------------
 PROFILE = (
@@ -263,7 +271,7 @@ r = base("PA-001", "IDology PASS + clear watch list -> reuse IQ screening, no st
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", review="False",
           provider="IDOLOGY", request_id="3571500001")
 idl_check(r, "pa_determined=True;pa_restriction_present=False;pa_pii_fingerprint=not_null")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_ONLY
 rows += [r, seed_row("PA-001", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE)]
 
@@ -276,7 +284,7 @@ pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="True", review="True",
           provider="IDOLOGY", request_id="3571500002",
           extra=("pa_hit_details=/OFAC SDN/", "source_verification_pid=not_null"))
 idl_check(r, "pa_determined=True;pa_restriction_present=True")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_ONLY
 rows += [r, seed_row("PA-002", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE)]
 
@@ -289,7 +297,7 @@ r = base("PA-003", "IDology FAIL then LexisNexis PASS, PII unchanged -> reuse ID
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False",
           provider="LEXISNEXIS", request_id="3571500003")
 idl_check(r, "pa_determined=True")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_LN
 rows += [
     r,
@@ -306,7 +314,7 @@ r = base("PA-004", "IDology API error -> pa_determined=False -> not reusable -> 
          "/vendor/idology/verify", "idology-api-error", IDL_ERROR)
 pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS")
 idl_check(r, "pa_determined=False")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_LN
 rows += [
     r,
@@ -328,7 +336,7 @@ add_status_details_then_resume(r, extra={
     "call3.body.data.additional_data_params.zip": "75201",
 })
 pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="PERSONA")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 rows += [
     r,
     seed_row("PA-005", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
@@ -349,7 +357,7 @@ add_status_details_then_resume(r, extra={
     "call3.body.data.additional_data_params.ssn": "'987654321'",
 })
 pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="PERSONA")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 rows += [
     r,
     seed_row("PA-006", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
@@ -367,7 +375,7 @@ r = base("PA-007",
          "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
 add_status_details_then_resume(r)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", provider="PERSONA")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 rows += [
     r,
     seed_row("PA-007", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
@@ -382,8 +390,11 @@ rows[-5]["calls"] = CALLS_IDL_LN_PERSONA
 # =========================================================================
 r = base("PA-008", "LexisNexis hard block -> flow FAILED -> PA screening must never run.",
          "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
-pa_absent(r)
-flow_check(r, "FAILED")
+# Order matters for a negative assertion: poll uks_kyc_flow until it is
+# actually FAILED (slot 1) BEFORE the single-shot absent check (slot 2), so
+# "no screening row" cannot pass merely because nothing has happened yet.
+flow_check(r, FAILED, slot=SLOT_PA)
+pa_absent(r, slot=SLOT_IDL)
 r["calls"] = CALLS_IDL_LN
 rows += [
     r,
@@ -398,8 +409,11 @@ rows += [
 r = base("PA-009", "Persona /resume verified FALSE -> flow FAILED -> PA screening must never run.",
          "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
 add_status_details_then_resume(r, persona_verified="'FALSE'")
-pa_absent(r)
-flow_check(r, "FAILED")
+# Order matters for a negative assertion: poll uks_kyc_flow until it is
+# actually FAILED (slot 1) BEFORE the single-shot absent check (slot 2), so
+# "no screening row" cannot pass merely because nothing has happened yet.
+flow_check(r, FAILED, slot=SLOT_PA)
+pa_absent(r, slot=SLOT_IDL)
 r["calls"] = CALLS_IDL_LN_PERSONA
 rows += [
     r,
@@ -417,7 +431,7 @@ rows += [
 r = base("PA-010", "Replayed /start on one flow_id -> single screening row, source still reuse.",
          "/vendor/idology/verify", "idology-pass-clear", IDL_PASS_CLEAR)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", provider="IDOLOGY")
-flow_check(r, "PASS")
+flow_check(r, PASSED)
 r.update({"repeat.same_flow_id": "3", "calls": CALLS_IDL_ONLY})
 rows += [r, seed_row("PA-010", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE)]
 
