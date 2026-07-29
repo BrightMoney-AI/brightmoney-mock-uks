@@ -35,6 +35,15 @@ HEADER = [
     "call3.body.data.additional_data_params.city",
     "call3.body.data.additional_data_params.state_short",
     "call3.body.data.additional_data_params.zip",
+    "call4.method", "call4.url", "call4.headers", "call4.expect_status", "call4.delay_ms",
+    "call4.body.meta.bright_uid", "call4.body.meta.request_id",
+    "call4.body.data.flow_id", "call4.body.data.kyc_type", "call4.body.data.client",
+    "call4.body.data.in_sync",
+    "call4.body.data.additional_data_params.ssn",
+    "call4.body.data.additional_data_params.address",
+    "call4.body.data.additional_data_params.city",
+    "call4.body.data.additional_data_params.state_short",
+    "call4.body.data.additional_data_params.zip",
     "repeat.same_flow_id", "repeat.distinct_ids", "repeat.concurrent",
     "resp.status", "resp.body",
     "db.host", "db.database", "db.delay_ms",
@@ -94,13 +103,22 @@ IDL_PASS_HIT = (
     "</restriction></response>"
 )
 # IDology FAIL, real response → PA screening still ran (pa_determined=True).
-# result.match is in no FAIL_*_CODES set, so the evaluator emits plain FAIL,
-# which the graph routes to LexisNexis.
+#
+# The result code MUST be one the evaluator can categorise. dev's
+# enrollment_waterfall graph only routes idology -> lexisnexis on the SPECIFIC
+# categories (triggers 31-35: FAIL_SSN / FAIL_NAME / FAIL_DOB / FAIL_MOB /
+# FAIL_ADDRESS) — there is NO trigger for plain "FAIL". "result.match" is in no
+# FAIL_*_CODES set, so it collapses to plain FAIL, no trigger fires, and the flow
+# dies FAILED at idology without ever calling LexisNexis. (prod's graph 4 DOES
+# have a plain-FAIL trigger, which is what made this easy to get wrong —
+# data/kyc_cases.csv relies on it and is therefore broken against dev.)
+# resultcode.ssn.does.not.match is in FAIL_SSN_CODES -> FAIL_SSN -> trigger 31.
 IDL_FAIL_CLEAR = (
     'status=200;format=xml;raw=<?xml version="1.0"?><response>'
     "<id-number>3571500003</id-number>"
     "<summary-result><key>id.failure</key><message>FAIL</message></summary-result>"
-    "<results><key>result.match</key><message>ID Located</message></results>"
+    "<results><key>resultcode.ssn.does.not.match</key>"
+    "<message>SSN Does Not Match</message></results>"
     "</response>"
 )
 # IDology API-level error → parser sets .error → pa_determined=False (nothing
@@ -138,6 +156,17 @@ PERSONA_CREATE = (
 
 PA_TABLE = "kyc_pa_screening_results"
 IDL_TABLE = "idology_kyc_verification"
+
+# --- vendor paths the mock must serve --------------------------------------
+# These are the paths the AUT actually POSTs to. Taken from the source of truth,
+# NOT from data/kyc_cases.csv — that file seeds LexisNexis at "/api/Lists/Search"
+# and "/api/OAuth2/Token", which are missing the "/LN.WebServices" prefix, so the
+# mock has no endpoint there and every LexisNexis leg of those cases is dead.
+P_PROFILE = "/api/v1/users/get_user_profile_data/"  # BM backend
+P_IDOLOGY = "/vendor/idology/verify"  # settings.IDOLOGY_API_URL path
+P_LN_TOKEN = "/LN.WebServices/api/OAuth2/Token"  # lexisnexis.constants.TOKEN_PATH
+P_LN_SEARCH = "/LN.WebServices/api/Lists/Search"  # lexisnexis.constants.SEARCH_PATH
+P_PERSONA = "/api/v1/inquiries"  # persona.constants.INQUIRIES_ENDPOINT
 
 
 def row(**kw):
@@ -255,11 +284,11 @@ def flow_check(r, status, slot=SLOT_FLOW):
     return r
 
 
-CALLS_IDL_ONLY = "/api/v1/users/get_user_profile_data/=1;/vendor/idology/verify=1"
-CALLS_IDL_LN = CALLS_IDL_ONLY + ";/api/Lists/Search=1"
+CALLS_IDL_ONLY = f"{P_PROFILE}=1;{P_IDOLOGY}=1"
+CALLS_IDL_LN = CALLS_IDL_ONLY + f";{P_LN_SEARCH}=1"
 # ">=1" must NOT be preceded by "=" — parse_calls_cell's greedy regex would fold
 # the "=" into the path and the assertion could never match.
-CALLS_IDL_LN_PERSONA = CALLS_IDL_LN + ";/api/v1/inquiries>=1"
+CALLS_IDL_LN_PERSONA = CALLS_IDL_LN + f";{P_PERSONA}>=1"
 
 rows = []
 
@@ -267,33 +296,33 @@ rows = []
 # PA-001 — IDology PASS, watch list clear, PII unchanged -> REUSE, no hit
 # =========================================================================
 r = base("PA-001", "IDology PASS + clear watch list -> reuse IQ screening, no standalone call.",
-         "/vendor/idology/verify", "idology-pass-clear", IDL_PASS_CLEAR)
+         P_IDOLOGY, "idology-pass-clear", IDL_PASS_CLEAR)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", review="False",
           provider="IDOLOGY", request_id="3571500001")
 idl_check(r, "pa_determined=True;pa_restriction_present=False;pa_pii_fingerprint=not_null")
 flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_ONLY
-rows += [r, seed_row("PA-001", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE)]
+rows += [r, seed_row("PA-001", P_PROFILE, "usm-profile-default", PROFILE)]
 
 # =========================================================================
 # PA-002 — IDology PASS *with* <restriction> -> REUSE, hit surfaced
 # =========================================================================
 r = base("PA-002", "IDology PASS carrying a PA hit -> reuse marks pa_hit + review_required.",
-         "/vendor/idology/verify", "idology-pass-hit", IDL_PASS_HIT)
+         P_IDOLOGY, "idology-pass-hit", IDL_PASS_HIT)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="True", review="True",
           provider="IDOLOGY", request_id="3571500002",
           extra=("pa_hit_details=/OFAC SDN/", "source_verification_pid=not_null"))
 idl_check(r, "pa_determined=True;pa_restriction_present=True")
 flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_ONLY
-rows += [r, seed_row("PA-002", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE)]
+rows += [r, seed_row("PA-002", P_PROFILE, "usm-profile-default", PROFILE)]
 
 # =========================================================================
 # PA-003 — IDology FAIL -> LexisNexis PASS, PII unchanged -> REUSE
 #          (the headline case: passed by a DIFFERENT provider, still reused)
 # =========================================================================
 r = base("PA-003", "IDology FAIL then LexisNexis PASS, PII unchanged -> reuse IDology's screening.",
-         "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
+         P_IDOLOGY, "idology-fail-clear", IDL_FAIL_CLEAR)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False",
           provider="LEXISNEXIS", request_id="3571500003")
 idl_check(r, "pa_determined=True")
@@ -301,95 +330,80 @@ flow_check(r, PASSED)
 r["calls"] = CALLS_IDL_LN
 rows += [
     r,
-    seed_row("PA-003", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-003", "/api/Lists/Search", "ln-pass", LN_PASS),
-    seed_row("PA-003", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
+    seed_row("PA-003", P_LN_TOKEN, "ln-token", LN_TOKEN),
+    seed_row("PA-003", P_LN_SEARCH, "ln-pass", LN_PASS),
+    seed_row("PA-003", P_PROFILE, "usm-profile-default", PROFILE),
 ]
 
+# PA-004 — IDology API error -> pa_determined=False, flow dies at idology
+#          On enrollment_waterfall an <error> collapses to plain FAIL, and there
+#          is NO plain-FAIL trigger, so the flow can never reach LexisNexis.
+#          What IS assertable (and valuable): the errored call is recorded with
+#          pa_determined=False so it can never satisfy a future reuse check, and
+#          a FAILED flow gets no screening row.
 # =========================================================================
-# PA-004 — IDology API error (pa_determined=False) -> LN PASS -> STANDALONE
-#          An errored IQ call never screened, so it must NOT satisfy reuse.
-# =========================================================================
-r = base("PA-004", "IDology API error -> pa_determined=False -> not reusable -> standalone path.",
-         "/vendor/idology/verify", "idology-api-error", IDL_ERROR)
-pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS")
-idl_check(r, "pa_determined=False")
-flow_check(r, PASSED)
-r["calls"] = CALLS_IDL_LN
-rows += [
-    r,
-    seed_row("PA-004", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-004", "/api/Lists/Search", "ln-pass", LN_PASS),
-    seed_row("PA-004", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
-]
+r = base("PA-004",
+         "IDology API error -> pa_determined=False recorded; FAILED flow gets no screening.",
+         P_IDOLOGY, "idology-api-error", IDL_ERROR)
+flow_check(r, FAILED, slot=SLOT_PA)
+pa_absent(r, slot=SLOT_IDL)
+idl_check(r, "pa_determined=False;pa_restriction_present=False", slot=SLOT_FLOW)
+r["calls"] = CALLS_IDL_ONLY
+rows += [r, seed_row("PA-004", P_PROFILE, "usm-profile-default", PROFILE)]
 
 # =========================================================================
-# PA-005 — address corrected mid-flow -> fingerprint changes -> STANDALONE
+# PA-005 — escalation round-trip with a PII correction -> REUSE
+#
+#   idology(FAIL_SSN, PII_A) -> lexisnexis(FAIL_NON_SSN) -> persona(PASS)
+#     -> ESCALATE_SSN parks back at idology
+#     -> /resume #2 supplies corrected ssn + address (PII_B)
+#     -> idology re-runs (sequence: 2nd response PASSES) -> terminal PASSED
+#
+# The 2nd idology call screens PII_B, which IS what the flow passed with, so the
+# reuse check matches it — proving reuse tracks the latest matching call, not the
+# first. Terminal provider is IDOLOGY (the escalation target on this graph).
 # =========================================================================
 r = base("PA-005",
-         "Address corrected at /resume -> PA fingerprint changes -> standalone call, no reuse.",
-         "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
-add_status_details_then_resume(r, extra={
-    "call3.body.data.additional_data_params.address": "999 Different Ave",
-    "call3.body.data.additional_data_params.city": "Dallas",
-    "call3.body.data.additional_data_params.state_short": "TX",
-    "call3.body.data.additional_data_params.zip": "75201",
-})
-pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="PERSONA")
-flow_check(r, PASSED)
-rows += [
-    r,
-    seed_row("PA-005", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-005", "/api/Lists/Search", "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
-    seed_row("PA-005", "/api/v1/inquiries", "persona-create", PERSONA_CREATE),
-    seed_row("PA-005", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
-]
-rows[-5]["calls"] = CALLS_IDL_LN_PERSONA
-
-# =========================================================================
-# PA-006 — SSN corrected mid-flow -> fingerprint UNCHANGED -> still REUSE
-#          SSN is outside PA_SCREENING_FIELDS by design.
-# =========================================================================
-r = base("PA-006",
-         "SSN corrected at /resume -> PA fingerprint unchanged (name+address only) -> still reuses.",
-         "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
-add_status_details_then_resume(r, extra={
-    "call3.body.data.additional_data_params.ssn": "'987654321'",
-})
-pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="PERSONA")
-flow_check(r, PASSED)
-rows += [
-    r,
-    seed_row("PA-006", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-006", "/api/Lists/Search", "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
-    seed_row("PA-006", "/api/v1/inquiries", "persona-create", PERSONA_CREATE),
-    seed_row("PA-006", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
-]
-rows[-5]["calls"] = CALLS_IDL_LN_PERSONA
-
-# =========================================================================
-# PA-007 — Persona-terminal PASS, no PII change -> REUSE, provider=PERSONA
-# =========================================================================
-r = base("PA-007",
-         "Flow passes via Persona with unchanged PII -> reuse; primary_provider records PERSONA.",
-         "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
+         "Escalation round-trip: PII corrected at resume, idology re-screens it -> reuse.",
+         P_IDOLOGY, "idology-fail-then-pass", IDL_FAIL_CLEAR, db_delay=12000)
 add_status_details_then_resume(r)
-pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", provider="PERSONA")
+r.update({
+    "call4.method": "POST", "call4.url": RESUME, "call4.headers": JSON_H,
+    "call4.expect_status": "200", "call4.delay_ms": "3000",
+    "call4.body.meta.bright_uid": "{{uuid:uid}}",
+    "call4.body.meta.request_id": "{{uuid:rid3}}",
+    "call4.body.data.flow_id": FLOW, "call4.body.data.kyc_type": "DM",
+    "call4.body.data.client": "USM", "call4.body.data.in_sync": "true",
+    "call4.body.data.additional_data_params.ssn": "'987654321'",
+    "call4.body.data.additional_data_params.address": "999 Different Ave",
+    "call4.body.data.additional_data_params.city": "Dallas",
+    "call4.body.data.additional_data_params.state_short": "TX",
+    "call4.body.data.additional_data_params.zip": "75201",
+})
+pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="IDOLOGY")
 flow_check(r, PASSED)
+# idology runs TWICE here (initial call + the post-escalation re-run), so the
+# count differs from every other case.
+r["calls"] = (
+    f"{P_PROFILE}=1;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=1"
+)
 rows += [
     r,
-    seed_row("PA-007", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-007", "/api/Lists/Search", "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
-    seed_row("PA-007", "/api/v1/inquiries", "persona-create", PERSONA_CREATE),
-    seed_row("PA-007", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
+    # 2nd row for the SAME (path, scenario) makes this a SEQUENCE: call 1 fails
+    # with FAIL_SSN, call 2 (after the escalation resume) passes.
+    seed_row("PA-005", P_IDOLOGY, "idology-fail-then-pass", IDL_PASS_CLEAR),
+    seed_row("PA-005", P_LN_TOKEN, "ln-token", LN_TOKEN),
+    seed_row("PA-005", P_LN_SEARCH, "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
+    seed_row("PA-005", P_PERSONA, "persona-create", PERSONA_CREATE),
+    seed_row("PA-005", P_PROFILE, "usm-profile-default", PROFILE),
 ]
-rows[-5]["calls"] = CALLS_IDL_LN_PERSONA
 
+# =========================================================================
 # =========================================================================
 # PA-008 — FAILED flow -> NO screening row at all (negative case)
 # =========================================================================
 r = base("PA-008", "LexisNexis hard block -> flow FAILED -> PA screening must never run.",
-         "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
+         P_IDOLOGY, "idology-fail-clear", IDL_FAIL_CLEAR)
 # Order matters for a negative assertion: poll uks_kyc_flow until it is
 # actually FAILED (slot 1) BEFORE the single-shot absent check (slot 2), so
 # "no screening row" cannot pass merely because nothing has happened yet.
@@ -398,16 +412,16 @@ pa_absent(r, slot=SLOT_IDL)
 r["calls"] = CALLS_IDL_LN
 rows += [
     r,
-    seed_row("PA-008", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-008", "/api/Lists/Search", "ln-hard-block", LN_HARD_BLOCK),
-    seed_row("PA-008", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
+    seed_row("PA-008", P_LN_TOKEN, "ln-token", LN_TOKEN),
+    seed_row("PA-008", P_LN_SEARCH, "ln-hard-block", LN_HARD_BLOCK),
+    seed_row("PA-008", P_PROFILE, "usm-profile-default", PROFILE),
 ]
 
 # =========================================================================
 # PA-009 — Persona declined -> flow FAILED -> NO screening row (negative)
 # =========================================================================
 r = base("PA-009", "Persona /resume verified FALSE -> flow FAILED -> PA screening must never run.",
-         "/vendor/idology/verify", "idology-fail-clear", IDL_FAIL_CLEAR)
+         P_IDOLOGY, "idology-fail-clear", IDL_FAIL_CLEAR)
 add_status_details_then_resume(r, persona_verified="'FALSE'")
 # Order matters for a negative assertion: poll uks_kyc_flow until it is
 # actually FAILED (slot 1) BEFORE the single-shot absent check (slot 2), so
@@ -417,10 +431,10 @@ pa_absent(r, slot=SLOT_IDL)
 r["calls"] = CALLS_IDL_LN_PERSONA
 rows += [
     r,
-    seed_row("PA-009", "/api/OAuth2/Token", "ln-token", LN_TOKEN),
-    seed_row("PA-009", "/api/Lists/Search", "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
-    seed_row("PA-009", "/api/v1/inquiries", "persona-create", PERSONA_CREATE),
-    seed_row("PA-009", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE),
+    seed_row("PA-009", P_LN_TOKEN, "ln-token", LN_TOKEN),
+    seed_row("PA-009", P_LN_SEARCH, "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
+    seed_row("PA-009", P_PERSONA, "persona-create", PERSONA_CREATE),
+    seed_row("PA-009", P_PROFILE, "usm-profile-default", PROFILE),
 ]
 
 # =========================================================================
@@ -429,11 +443,11 @@ rows += [
 #          UNIQUE(kyc_flow) so a replay can never double-screen)
 # =========================================================================
 r = base("PA-010", "Replayed /start on one flow_id -> single screening row, source still reuse.",
-         "/vendor/idology/verify", "idology-pass-clear", IDL_PASS_CLEAR)
+         P_IDOLOGY, "idology-pass-clear", IDL_PASS_CLEAR)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", provider="IDOLOGY")
 flow_check(r, PASSED)
 r.update({"repeat.same_flow_id": "3", "calls": CALLS_IDL_ONLY})
-rows += [r, seed_row("PA-010", "/api/v1/users/get_user_profile_data/", "usm-profile-default", PROFILE)]
+rows += [r, seed_row("PA-010", P_PROFILE, "usm-profile-default", PROFILE)]
 
 
 out = "data/pa_screening_cases.csv"
