@@ -44,6 +44,22 @@ HEADER = [
     "call4.body.data.additional_data_params.city",
     "call4.body.data.additional_data_params.state_short",
     "call4.body.data.additional_data_params.zip",
+    # call5..call9 — _parse_extra_calls scans call2..call9, so these give room for
+    # a poll burst (PA-013) rather than the 3 follow-ups the earlier cases needed.
+    *[
+        f"call{n}.{suffix}"
+        for n in range(5, 10)
+        for suffix in (
+            "method", "url", "headers", "expect_status", "delay_ms",
+            "body.meta.bright_uid", "body.meta.request_id",
+            "body.data.flow_id", "body.data.kyc_type",
+            # /resume needs these too — the burst occupies the low call slots, so
+            # the resumes that follow it land in the high ones.
+            "body.data.client", "body.data.in_sync",
+            "body.data.additional_data_params.persona_kyc_verified",
+            "body.data.additional_data_params.ssn",
+        )
+    ],
     "repeat.same_flow_id", "repeat.distinct_ids", "repeat.concurrent",
     "resp.status", "resp.body",
     "db.host", "db.database", "db.delay_ms",
@@ -567,17 +583,28 @@ rows += [
 ]
 
 # =========================================================================
-# PA-010 — replaying /start with the same flow_id yields ONE screening row
-#          (flow_id is the /start idempotency key; the screening row is
-#          UNIQUE(kyc_flow) so a replay can never double-screen)
+# PA-010 — CONCURRENT burst of /start on one flow_id yields ONE screening row
+#
+# repeat.concurrent fires all 12 requests from a ThreadPoolExecutor, so they land
+# inside the same second and genuinely race. A sequential replay (the earlier
+# repeat.same_flow_id=3) could pass on ordering alone — each call simply saw the
+# previous one's committed row. Only a real race exercises what protects us:
+#   * flow_id UNIQUE on uks_kyc_flow  -> one flow, not twelve
+#   * UNIQUE(kyc_flow) on the screening row, CLAIMED BEFORE the PA call
+#     -> at most one screening, so a burst can never double-bill ExpectID PA
+#
+# This is the shape of the incident that started all of this: a client retrying
+# in a tight loop billed a provider once per retry.
 # =========================================================================
-r = base("PA-010", "Replayed /start on one flow_id -> single screening row, source still reuse.",
-         P_IDOLOGY, "idology-pass-clear", IDL_PASS_CLEAR)
+r = base("PA-010",
+         "Concurrent /start burst on one flow_id -> exactly one screening row, one IDology call.",
+         P_IDOLOGY, "idology-pass-clear", IDL_PASS_CLEAR, db_delay=12000)
 pa_checks(r, source="IDOLOGY_IQ_REUSED", hit="False", provider="IDOLOGY")
 flow_check(r, PASSED)
-r.update({"repeat.same_flow_id": "3", "calls": CALLS_IDL_ONLY})
+# IDology called exactly ONCE despite 12 concurrent /start calls — the flow-level
+# idempotency guard, not just the screening-level one.
+r.update({"repeat.concurrent": "12", "calls": CALLS_IDL_ONLY})
 rows += [r, seed_row("PA-010", P_PROFILE, "usm-profile-default", PROFILE)]
-
 
 # =========================================================================
 # The two PA_STANDALONE cases below run on kyc_type LN_PRIMARY ->
@@ -673,40 +700,85 @@ rows += [
 
 
 # =========================================================================
-# PA-013 — Persona inquiry creation carries the flow-scoped Idempotency-Key
+# PA-013 — Idempotency-Key holds under a BURST of Persona inquiry creations
 #
-# Same escalation round-trip as PA-005, with one difference that carries the
-# whole case: the Persona seed is discriminated on
+# The Persona seed is discriminated on
 #   $header.Idempotency-Key = kyc:<bright_uid>:<flow_id>
-# so the mock serves an inquiry ONLY for a request that sent exactly that key.
-# Miss it — header absent, or built from the wrong fields — and no scenario
-# matches, Persona errors, and the flow never reaches PASSED.
+# so the mock serves an inquiry ONLY for a request carrying exactly that key.
+# Miss it on ANY call — header absent, or built from the wrong fields — and no
+# scenario matches, the mock answers NoScenario, Persona errors, and the flow
+# never reaches PASSED. That is what makes the header assertable at all.
 #
-# Why it matters: /status_details re-invokes persona.data_fetch on every poll
-# with no local dedup, so without this header a polled flow bills a new Persona
-# inquiry per poll. The header is the only guard.
+# The burst is the point. /status_details re-invokes persona.data_fetch on every
+# poll: the dp dict it builds from UserProfile can never contain
+# persona_kyc_verified (that key only ever arrives transiently via /resume), so
+# every poll takes the create-inquiry branch. In prod that turned a client
+# polling in a loop into 7 Persona inquiries for one user in a single day.
+#
+# So this case fires SIX polls one second apart — well inside a minute, which is
+# the window the real incident happened in — before resuming. Each poll is an
+# independent create_inquiry, and every one of them must carry the same
+# flow-scoped key. A single sequential poll could pass on luck; six back-to-back
+# is the shape that actually broke.
+#
+# What the assertions cover, and what they do NOT:
+#   * >=6 matched calls to /api/v1/inquiries — every poll got a header-gated
+#     response, so the key was present and correct on all of them
+#   * flow PASSED — one unmatched call would have errored the Persona step
+#   * NOT covered: that Persona itself collapses the six into ONE inquiry. That
+#     is the provider's behaviour for a repeated key; the mock cannot dedupe and
+#     CallLog stores no headers, so only the real Persona sandbox can prove it.
+#     Six calls that SHOULD be one is still the underlying defect — the header
+#     bounds the damage, it does not remove the redundant calls. Fixing
+#     GetStatusDetailsView to stop re-calling on a PENDING poll is the real fix,
+#     and when that lands this becomes an exact "=1".
 # =========================================================================
 PERSONA_IDEMPOTENCY_KEY = "kyc:{{uuid:uid}}:" + FLOW
 
 r = base("PA-013",
-         "Persona create_inquiry must send Idempotency-Key=kyc:<bright_uid>:<flow_id>; "
-         "the mock only answers a request that carries it.",
-         P_IDOLOGY, "idology-fail-then-pass", IDL_FAIL_CLEAR, db_delay=12000)
-add_status_details_then_resume(r)
+         "Burst of 6 Persona inquiry creations in ~6s: every one must carry "
+         "Idempotency-Key=kyc:<bright_uid>:<flow_id> or the mock refuses to answer.",
+         P_IDOLOGY, "idology-fail-then-pass", IDL_FAIL_CLEAR, db_delay=20000)
+# call2..call7 — the burst. One second apart, each re-entering persona.data_fetch.
+for _n in range(2, 8):
+    r.update({
+        f"call{_n}.method": "POST", f"call{_n}.url": STATUS_DETAILS,
+        f"call{_n}.headers": JSON_H, f"call{_n}.expect_status": "200",
+        # 1s spacing: tight enough to be a genuine burst, slow enough that each
+        # poll observes the PENDING Persona step rather than racing the first.
+        f"call{_n}.delay_ms": "1000" if _n > 2 else "3000",
+        f"call{_n}.body.meta.bright_uid": "{{uuid:uid}}",
+        f"call{_n}.body.meta.request_id": f"{{{{uuid:rid_poll{_n}}}}}",
+        f"call{_n}.body.data.flow_id": FLOW,
+        f"call{_n}.body.data.kyc_type": "DM",
+    })
+# call8 — Persona reports PASS, firing ESCALATE_SSN back to idology.
 r.update({
-    "call4.method": "POST", "call4.url": RESUME, "call4.headers": JSON_H,
-    "call4.expect_status": "200", "call4.delay_ms": "3000",
-    "call4.body.meta.bright_uid": "{{uuid:uid}}",
-    "call4.body.meta.request_id": "{{uuid:rid3}}",
-    "call4.body.data.flow_id": FLOW, "call4.body.data.kyc_type": "DM",
-    "call4.body.data.client": "USM", "call4.body.data.in_sync": "true",
-    "call4.body.data.additional_data_params.ssn": "'987654321'",
+    "call8.method": "POST", "call8.url": RESUME, "call8.headers": JSON_H,
+    "call8.expect_status": "200", "call8.delay_ms": "1500",
+    "call8.body.meta.bright_uid": "{{uuid:uid}}",
+    "call8.body.meta.request_id": "{{uuid:rid2}}",
+    "call8.body.data.flow_id": FLOW, "call8.body.data.kyc_type": "DM",
+    "call8.body.data.client": "USM", "call8.body.data.in_sync": "true",
+    "call8.body.data.additional_data_params.persona_kyc_verified": "'PASS'",
 })
-# PII never changed, so the screening outcome is PA-006's — asserted here only
-# to prove the gated Persona leg did not perturb the rest of the flow.
+# call9 — the corrected SSN the escalation parked for.
+r.update({
+    "call9.method": "POST", "call9.url": RESUME, "call9.headers": JSON_H,
+    "call9.expect_status": "200", "call9.delay_ms": "3000",
+    "call9.body.meta.bright_uid": "{{uuid:uid}}",
+    "call9.body.meta.request_id": "{{uuid:rid3}}",
+    "call9.body.data.flow_id": FLOW, "call9.body.data.kyc_type": "DM",
+    "call9.body.data.client": "USM", "call9.body.data.in_sync": "true",
+    "call9.body.data.additional_data_params.ssn": "'987654321'",
+})
+# SSN-only correction, so the fingerprint is PA-006's FP_PII_A — asserted here to
+# prove the burst did not perturb the screening decision.
 pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="IDOLOGY", fingerprint=FP_PII_A)
 flow_check(r, PASSED)
-r["calls"] = f"{P_PROFILE}=2;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=1"
+# >=6 inquiry calls: one per poll, every one header-gated. Reaching PASSED at all
+# means none of them fell through to NoScenario.
+r["calls"] = f"{P_PROFILE}=2;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=6"
 rows += [
     r,
     seed_row("PA-013", P_IDOLOGY, "idology-fail-then-pass", IDL_PASS_CLEAR),
