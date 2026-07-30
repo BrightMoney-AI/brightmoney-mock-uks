@@ -266,12 +266,19 @@ SLOT_PA = 1
 SLOT_IDL = 2
 SLOT_FLOW = 3
 
-# On the standalone path ExpectID PA is intentionally unmocked, so the outcome
-# depends on whether the AUT can reach the endpoint at all: unroutable → ERROR,
-# reachable → COMPLETED. Either is acceptable; the assertion that actually
-# matters is screening_source=PA_STANDALONE, which is written at claim time
-# BEFORE the call and therefore proves the decision independent of the network.
-STANDALONE_STATUS = "/^(ERROR|COMPLETED)$/"
+# On the standalone path ExpectID PA is intentionally unmocked — it makes a real
+# call to web.idologylive.com. Confirmed reachable from dev (HTTP 200, id-number
+# 7037530653, 2026-07-30), so these cases pin COMPLETED rather than tolerating
+# ERROR: a screening that could not run is a failure worth seeing, not noise.
+STANDALONE_STATUS = "COMPLETED"
+
+# The synthetic profile PII (John Doe / 123 Main St) is not on any watch list, so
+# the real endpoint answers <key>global.watch.list.no.match</key>. Asserted
+# explicitly because the standalone product returns a <restriction> block even on
+# a CLEAR result — unlike IQ, which omits it — and reading that presence as a hit
+# flagged every clean screening for manual review. pa_review_required=False is
+# the assertion that catches a regression there.
+STANDALONE_CLEAR = ("pa_hit=False", "pa_review_required=False")
 
 
 # SHA-256 of the PA-relevant fields (name + address) for the two PII sets these
@@ -596,7 +603,8 @@ rows += [r, seed_row("PA-010", P_PROFILE, "usm-profile-default", PROFILE)]
 r = base("PA-011",
          "LexisNexis primary passes outright: IDology never called -> real ExpectID PA standalone call.",
          P_LN_TOKEN, "ln-token", LN_TOKEN, kyc_type="LN_PRIMARY")
-pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS")
+pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS",
+          extra=STANDALONE_CLEAR)
 # Nothing may exist in the IDology table — that absence IS the precondition that
 # forces the standalone path, so assert it rather than inferring it.
 idl_check(r, "__absent__=true")
@@ -640,7 +648,8 @@ r.update({
     "call4.body.data.additional_data_params.state_short": "TX",
     "call4.body.data.additional_data_params.zip": "75201",
 })
-pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS")
+pa_checks(r, source="PA_STANDALONE", status=STANDALONE_STATUS, provider="LEXISNEXIS",
+          extra=STANDALONE_CLEAR)
 # The IDology row must exist AND be determined — that is what proves the
 # standalone call was forced by a fingerprint MISMATCH rather than by the absence
 # of any screening at all (which is PA-011's case, not this one).
