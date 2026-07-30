@@ -196,10 +196,17 @@ def row(**kw):
     return r
 
 
-def seed_row(case_id, path, scenario, resp):
-    """A continuation row contributing one more seed to *case_id*."""
-    return row(**{"case_id": case_id, "seed.path": path,
-                  "seed.scenario": scenario, "seed.resp": resp})
+def seed_row(case_id, path, scenario, resp, match=""):
+    """A continuation row contributing one more seed to *case_id*.
+
+    *match* is a scenario discriminator (``mockvendor.matcher._discriminator_matches``):
+    ``$header.X-Foo=value`` for a request header, otherwise a body JSONPath. A
+    seeded scenario whose discriminator does not match is not eligible, so the
+    mock answers NoScenario — which turns "the AUT failed to send this header"
+    into a failing case.
+    """
+    return row(**{"case_id": case_id, "seed.path": path, "seed.scenario": scenario,
+                  "seed.resp": resp, "seed.match": match})
 
 
 def base(case_id, notes, seed_path, seed_scenario, seed_resp, *,
@@ -653,6 +660,52 @@ rows += [
     seed_row("PA-012", P_IDOLOGY, "idology-fail-clear", IDL_FAIL_CLEAR),
     seed_row("PA-012", P_PERSONA, "persona-create", PERSONA_CREATE),
     seed_row("PA-012", P_PROFILE, "usm-profile-default", PROFILE),
+]
+
+
+# =========================================================================
+# PA-013 — Persona inquiry creation carries the flow-scoped Idempotency-Key
+#
+# Same escalation round-trip as PA-005, with one difference that carries the
+# whole case: the Persona seed is discriminated on
+#   $header.Idempotency-Key = kyc:<bright_uid>:<flow_id>
+# so the mock serves an inquiry ONLY for a request that sent exactly that key.
+# Miss it — header absent, or built from the wrong fields — and no scenario
+# matches, Persona errors, and the flow never reaches PASSED.
+#
+# Why it matters: /status_details re-invokes persona.data_fetch on every poll
+# with no local dedup, so without this header a polled flow bills a new Persona
+# inquiry per poll. The header is the only guard.
+# =========================================================================
+PERSONA_IDEMPOTENCY_KEY = "kyc:{{uuid:uid}}:" + FLOW
+
+r = base("PA-013",
+         "Persona create_inquiry must send Idempotency-Key=kyc:<bright_uid>:<flow_id>; "
+         "the mock only answers a request that carries it.",
+         P_IDOLOGY, "idology-fail-then-pass", IDL_FAIL_CLEAR, db_delay=12000)
+add_status_details_then_resume(r)
+r.update({
+    "call4.method": "POST", "call4.url": RESUME, "call4.headers": JSON_H,
+    "call4.expect_status": "200", "call4.delay_ms": "3000",
+    "call4.body.meta.bright_uid": "{{uuid:uid}}",
+    "call4.body.meta.request_id": "{{uuid:rid3}}",
+    "call4.body.data.flow_id": FLOW, "call4.body.data.kyc_type": "DM",
+    "call4.body.data.client": "USM", "call4.body.data.in_sync": "true",
+    "call4.body.data.additional_data_params.ssn": "'987654321'",
+})
+# PII never changed, so the screening outcome is PA-006's — asserted here only
+# to prove the gated Persona leg did not perturb the rest of the flow.
+pa_checks(r, source="IDOLOGY_IQ_REUSED", provider="IDOLOGY", fingerprint=FP_PII_A)
+flow_check(r, PASSED)
+r["calls"] = f"{P_PROFILE}=2;{P_IDOLOGY}=2;{P_LN_SEARCH}=1;{P_PERSONA}>=1"
+rows += [
+    r,
+    seed_row("PA-013", P_IDOLOGY, "idology-fail-then-pass", IDL_PASS_CLEAR),
+    seed_row("PA-013", P_LN_TOKEN, "ln-token", LN_TOKEN),
+    seed_row("PA-013", P_LN_SEARCH, "ln-non-ssn-soft-fail", LN_SOFT_FAIL),
+    seed_row("PA-013", P_PERSONA, "persona-create-idempotent", PERSONA_CREATE,
+             match=f"$header.Idempotency-Key={PERSONA_IDEMPOTENCY_KEY}"),
+    seed_row("PA-013", P_PROFILE, "usm-profile-default", PROFILE),
 ]
 
 
