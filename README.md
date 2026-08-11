@@ -120,6 +120,7 @@ in one cell as `key=value;key=value` (escape a literal `;`/`,` with `\`).
 case_id, flow_id, tags, client_context,
 seedN.path, seedN.method, seedN.scenario, seedN.priority, seedN.match, seedN.resp, seedN.is_sequence,
 call.method, call.url, call.headers, call.body.*, call.expect_status,
+produce.topic, produce.key, produce.body.*,
 repeat.same_flow_id, repeat.distinct_ids, repeat.concurrent,
 resp.status, resp.body,
 db.host, db.database, dbN.table, dbN.where, dbN.expect,
@@ -127,7 +128,37 @@ kafka.bootstrap, kafkaN.topic, kafkaN.key, kafkaN.expect,
 calls
 ```
 
-`expect` values support `not_null` and `/regex/`.
+`expect` values support `not_null`, `null` and `/regex/`. `dbN.expect=__absent__=true`
+asserts that **no** row matches the where clause.
+
+### Driving a consumer, not an endpoint
+
+Set `produce.topic` instead of `call.url` when the AUT's entry point is a Kafka
+consumer. The runner produces `produce.body.*` (dot keys become nested JSON) to the
+topic and the AUT's own consumer picks it up — so the consumer is exercised rather
+than bypassed by a test-only endpoint.
+
+```bash
+python -m testrunner data/my_cases.csv                      # dev cluster (default)
+python -m testrunner data/my_cases.csv --kafka-bootstrap localhost:9092
+```
+
+`call.url` and `produce.topic` are mutually exclusive; exactly one is required.
+`repeat.*` applies identically to both. A produce has no HTTP response, so `resp.*`
+cannot be asserted on these cases — verify through `dbN.*` and `calls`.
+
+Broker resolution, highest precedence first:
+
+| source | when to use |
+|---|---|
+| the case's `kafka.bootstrap` cell | one case must target a different broker |
+| `--kafka-bootstrap` | per-run override |
+| `$KAFKA_BOOTSTRAP` | CI |
+| `DEV_KAFKA_BOOTSTRAP` in `testrunner/__main__.py` | default: the dev MSK cluster |
+
+A `kafka://` (or `SASL_SSL://`) scheme is stripped automatically, so a broker list
+can be pasted straight from a service's `KAFKA_BROKER_URL` config. Requires
+`kafka-python`.
 
 ---
 
@@ -138,6 +169,7 @@ calls
 | `demo_cases.csv` | 8 cases tuned to the bundled `dummy_aut`; what `run_demo.sh` runs. |
 | `kyc_scenarios.csv` | Scenario-library seed file for `seed_scenarios`. |
 | `kyc_cases.csv` | The full 26-case KYC suite authored against the **real** UKS AUT (IDology → LexisNexis → Persona → escalations). Validates with `--validate-only`; point `--mock-base`/`--aut-sqlite` at a real deployment to run it. |
+| `mixpanel_forwarder_cases.csv` | 38 cases for the mixpanel-forwarder event-storage redesign — Kafka-driven (`produce.topic`), asserting the event ledger, the legacy table and Mixpanel send counts. Grouped by tag: `r1`, `switches`, `dedupe`, `reliability`, `stress`, `degraded`. Several groups require a specific AUT flag posture — see the `posture-*` tag on each case. |
 
 ---
 

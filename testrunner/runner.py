@@ -115,12 +115,110 @@ def _seed_payload(s: schema.SeedGroup) -> dict:
     }
 
 
+class _ProducedAck:
+    """Stand-in for a requests.Response on Kafka-driven cases.
+
+    A produce has no HTTP status to assert, so resp.* checks are skipped for these
+    cases (see evaluate). Verification happens entirely through the AUT's database
+    and the mock CallLog, which is the right surface for an async consumer anyway.
+    """
+    status_code = None
+    text = ""
+
+    def __init__(self, topic: str, count: int):
+        self.topic = topic
+        self.count = count
+        self.text = f"produced {count} message(s) to {topic}"
+
+    def json(self):
+        return {"produced": self.count, "topic": self.topic}
+
+
 class Runner:
     def __init__(self, mock_base: str, aut_sqlite: str | None = None,
-                 enable_kafka: bool = False):
+                 enable_kafka: bool = False, kafka_bootstrap: str | None = None):
         self.mock_base = mock_base.rstrip("/")
         self.aut_sqlite = aut_sqlite
         self.enable_kafka = enable_kafka
+        self.kafka_bootstrap = kafka_bootstrap
+        self._producer = None
+
+    # --- kafka drive ---
+    @staticmethod
+    def _bootstrap_servers(bootstrap: str) -> list[str]:
+        """``kafka://host:9092,host2:9092`` -> ``['host:9092', 'host2:9092']``.
+
+        Broker lists are usually copied from an app config that carries a scheme
+        (faust wants ``kafka://``); kafka-python wants bare ``host:port`` and fails
+        obscurely on the scheme. Strip it here so either form can be pasted in.
+        """
+        out = []
+        for b in bootstrap.split(","):
+            b = b.strip()
+            if not b:
+                continue
+            if "://" in b:
+                b = b.split("://", 1)[1]
+            out.append(b)
+        return out
+
+    def _kafka_producer(self, bootstrap: str):
+        """One producer per runner, built on first use."""
+        if self._producer is None:
+            from kafka import KafkaProducer  # kafka-python
+            self._producer = KafkaProducer(
+                bootstrap_servers=self._bootstrap_servers(bootstrap),
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                key_serializer=lambda k: k.encode("utf-8") if k else None,
+                # Wait for the broker so a produce failure surfaces as a test error
+                # rather than a silently missing message.
+                acks="all",
+                retries=3,
+            )
+        return self._producer
+
+    def _produce_once(self, case: schema.Case, corr_value: str):
+        flat = dict(case.produce.body)
+        # Same correlation-id injection as the HTTP drive: overwrite only a slot the
+        # case actually declares, so replays and distinct-id runs address the right
+        # event without fabricating fields the AUT does not expect.
+        if case.id_key:
+            key = next((k for k in flat if k == case.id_key or k.endswith("." + case.id_key)), None)
+            if key is not None:
+                flat[key] = corr_value
+        body = _unflatten(flat)
+        bootstrap = case.kafka_bootstrap or self.kafka_bootstrap
+        if not bootstrap:
+            raise RuntimeError(
+                "produce.topic set but no kafka bootstrap; pass --kafka-bootstrap "
+                "or set kafka.bootstrap on the case")
+        print(f"[produce] {case.produce.topic} key={case.produce.key or corr_value}")
+        print(f"[produce] payload: {body}")
+        producer = self._kafka_producer(bootstrap)
+        producer.send(case.produce.topic, key=case.produce.key or corr_value, value=body)
+        return body
+
+    def _drive_kafka(self, case: schema.Case) -> _ProducedAck:
+        rep = case.repeat
+        sent = 0
+        for n in range(rep["distinct_ids"]):
+            cid = case.flow_id if rep["distinct_ids"] == 1 else f"{case.flow_id}-{n}"
+            total = max(rep["same_flow_id"], rep["concurrent"])
+            if rep["concurrent"] > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=rep["concurrent"]) as ex:
+                    futs = [ex.submit(self._produce_once, case, cid) for _ in range(rep["concurrent"])]
+                    for f in concurrent.futures.as_completed(futs):
+                        f.result()
+                        sent += 1
+            else:
+                for _ in range(total):
+                    self._produce_once(case, cid)
+                    sent += 1
+        # Block until the broker has them all, so db.delay_ms measures the AUT's
+        # processing time and not our own send buffer draining.
+        self._producer.flush(timeout=30)
+        print(f"[produce] flushed {sent} message(s)")
+        return _ProducedAck(case.produce.topic, sent)
 
     # --- mock admin helpers ---
     def reset(self):
@@ -155,7 +253,11 @@ class Runner:
         return requests.request(case.call["method"], case.call["url"],
                                 json=body, headers=case.call["headers"], timeout=30)
 
-    def drive(self, case: schema.Case) -> requests.Response:
+    def drive(self, case: schema.Case):
+        # Consumer-driven AUT: produce to Kafka and let its own consumer pick it up.
+        if case.produce and case.produce.topic:
+            return self._drive_kafka(case)
+
         rep = case.repeat
         chosen = None
         for n in range(rep["distinct_ids"]):
@@ -181,12 +283,17 @@ class Runner:
         return chosen
 
     # --- evaluate ---
-    def evaluate(self, case: schema.Case, response: requests.Response,
+    def evaluate(self, case: schema.Case, response,
                  call_baseline: dict | None = None) -> list[str]:
         errs: list[str] = []
-        if case.resp["status"] is not None and response.status_code != case.resp["status"]:
+        # Kafka-driven cases have no HTTP response; resp.* is not applicable to them.
+        kafka_driven = isinstance(response, _ProducedAck)
+        if kafka_driven and (case.resp["status"] is not None or case.resp["body"]):
+            errs.append("resp.* cannot be asserted on a produce-driven case; "
+                        "verify via dbN.* and calls instead")
+        if not kafka_driven and case.resp["status"] is not None and response.status_code != case.resp["status"]:
             errs.append(f"resp.status expected {case.resp['status']}, got {response.status_code}")
-        if case.resp["body"]:
+        if case.resp["body"] and not kafka_driven:
             try:
                 payload = response.json()
             except ValueError:

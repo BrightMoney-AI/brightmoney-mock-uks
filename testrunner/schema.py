@@ -142,6 +142,20 @@ class KafkaCheck:
 
 
 @dataclass
+class ProduceSpec:
+    """Drive the AUT by producing a Kafka message instead of calling it over HTTP.
+
+    For AUTs whose entry point is a consumer, not an endpoint. When present the
+    runner produces ``body`` as JSON to ``topic`` and the AUT's own consumer picks
+    it up, so the consumer is exercised rather than bypassed by a test-only
+    endpoint. ``repeat.*`` applies exactly as it does to HTTP drives.
+    """
+    topic: str
+    key: str
+    body: dict
+
+
+@dataclass
 class Case:
     case_id: str
     flow_id: str  # correlation/idempotency VALUE (historically the UKS flow id)
@@ -165,6 +179,8 @@ class Case:
     # or "" to disable id injection entirely for AUTs that have no such concept.
     id_key: str = "flow_id"
     raw: dict = field(default_factory=dict)
+    # Kafka drive, when the AUT is consumer-driven. Mutually exclusive with call.url.
+    produce: ProduceSpec | None = None
 
 
 def _resp_from_cell(cell: str) -> dict:
@@ -195,6 +211,17 @@ def _coerce(v: str):
     if re.fullmatch(r"-?\d+", v):
         return int(v)
     return v
+
+
+def _parse_produce(row: dict, g, _ctx: dict, interp=True) -> ProduceSpec | None:
+    """Parse ``produce.topic`` / ``produce.key`` / ``produce.body.*`` into a ProduceSpec."""
+    topic = g("produce.topic")
+    if not topic:
+        return None
+    _i = (lambda s: _interpolate(s, _ctx)) if interp else (lambda s: s)
+    body = {k[len("produce.body."):]: _coerce(_i(v.strip()))
+            for k, v in row.items() if k.startswith("produce.body.") and (v or "").strip()}
+    return ProduceSpec(topic=topic, key=g("produce.key"), body=body)
 
 
 def _parse_extra_calls(first: dict, g, _ctx: dict, interp=True) -> list:
@@ -284,6 +311,7 @@ def parse_case(row: dict) -> Case:
         calls=calls, call_steps=_parse_extra_calls(row, g, _ctx),
         db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
         notes=g("notes"), id_key=g("id_key") or "flow_id", raw=row,
+        produce=_parse_produce(row, g, _ctx),
     )
 
 
@@ -386,6 +414,7 @@ def parse_case_new(rows: list[dict], interpolate: bool = True) -> Case:
         calls=calls, call_steps=_parse_extra_calls(first, g, _ctx, interp=interpolate),
         db_delay_ms=int(g("db.delay_ms")) if g("db.delay_ms") else 0,
         notes=g("notes"), id_key=g("id_key") or "flow_id", raw=first,
+        produce=_parse_produce(first, g, _ctx, interp=interpolate),
     )
 
 
@@ -413,6 +442,8 @@ def case_to_dict(case: Case) -> dict:
         "calls": case.calls,
         "kafka": {"bootstrap": case.kafka_bootstrap},
         "kafka_checks": [{"topic": k.topic, "key": k.key, "expect": k.expect} for k in case.kafka_checks],
+        "produce": ({"topic": case.produce.topic, "key": case.produce.key,
+                     "body": case.produce.body} if case.produce else None),
     }
 
 
@@ -490,6 +521,9 @@ def case_from_dict(definition: dict, interpolate: bool = True) -> Case:
         notes=definition.get("notes", ""),
         id_key=definition.get("id_key", "flow_id") or "flow_id",
         raw=definition,
+        produce=(ProduceSpec(topic=deep(_prod.get("topic", "")), key=deep(_prod.get("key", "") or ""),
+                             body=deep(_prod.get("body", {}) or {}))
+                 if (_prod := (definition.get("produce") or None)) else None),
     )
 
 
@@ -498,8 +532,14 @@ def validate(case: Case) -> list[str]:
     errs: list[str] = []
     if not case.case_id:
         errs.append("case_id is required")
-    if not case.call["url"]:
-        errs.append("call.url is required")
+    # A case is driven either over HTTP (call.url) or by producing to Kafka
+    # (produce.topic) — exactly one. Consumer-driven AUTs have no endpoint to call.
+    if not case.call["url"] and not (case.produce and case.produce.topic):
+        errs.append("either call.url or produce.topic is required")
+    if case.call["url"] and case.produce and case.produce.topic:
+        errs.append("call.url and produce.topic are mutually exclusive")
+    if case.produce and case.produce.topic and not case.produce.body:
+        errs.append("produce.topic requires at least one produce.body.* column")
     # Seeds are optional: a case may just drive the AUT and validate the
     # response (or just fire a call). Seed groups that ARE present are still
     # validated below.

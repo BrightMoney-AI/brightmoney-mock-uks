@@ -15,6 +15,13 @@ from datetime import datetime
 
 from . import runner, schema
 
+# Dev MSK cluster, used when neither --kafka-bootstrap nor $KAFKA_BOOTSTRAP is set.
+# The kafka:// scheme is accepted and stripped by the runner, so this can be pasted
+# straight from the service's KAFKA_BROKER_URL config.
+DEV_KAFKA_BOOTSTRAP = (
+    "kafka://b-1.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092"
+)
+
 # Load .env so DB_USER / DB_PASSWORD are available to verifiers
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 if os.path.exists(_env_path):
@@ -33,6 +40,10 @@ def main(argv=None) -> int:
     ap.add_argument("--aut-sqlite", default=None,
                     help="Verify DB checks against this sqlite file (demo AUT).")
     ap.add_argument("--enable-kafka", action="store_true")
+    ap.add_argument("--kafka-bootstrap", default=os.getenv("KAFKA_BOOTSTRAP", DEV_KAFKA_BOOTSTRAP),
+                    help="Broker list for produce-driven cases (produce.topic). "
+                         "A kafka:// scheme is stripped automatically. "
+                         f"Defaults to $KAFKA_BOOTSTRAP, else the dev cluster ({DEV_KAFKA_BOOTSTRAP}).")
     ap.add_argument("--validate-only", action="store_true")
     ap.add_argument("--tag", default=None, help="Only run cases carrying this tag.")
     args = ap.parse_args(argv)
@@ -52,7 +63,9 @@ def main(argv=None) -> int:
         print(f"\n{len(cases) - bad}/{len(cases)} rows valid.")
         return 1 if bad else 0
 
-    run = runner.Runner(args.mock_base, aut_sqlite=args.aut_sqlite, enable_kafka=args.enable_kafka)
+    run = runner.Runner(args.mock_base, aut_sqlite=args.aut_sqlite,
+                        enable_kafka=args.enable_kafka,
+                        kafka_bootstrap=args.kafka_bootstrap or None)
     passed = 0
     failing: list[dict] = []
     for c in cases:
