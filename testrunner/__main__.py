@@ -16,11 +16,15 @@ from datetime import datetime
 from . import runner, schema
 
 # Dev MSK cluster, used when neither --kafka-bootstrap nor $KAFKA_BOOTSTRAP is set.
-# The kafka:// scheme is accepted and stripped by the runner, so this can be pasted
-# straight from the service's KAFKA_BROKER_URL config.
-DEV_KAFKA_BOOTSTRAP = (
-    "kafka://b-1.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092"
-)
+# All four brokers are listed so a single unavailable broker does not fail the run.
+# A kafka:// scheme is accepted and stripped by the runner, so this can be pasted
+# straight from the service's KAFKA_BROKER_URL config in either form.
+DEV_KAFKA_BOOTSTRAP = ",".join([
+    "b-1.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+    "b-2.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+    "b-3.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+    "b-4.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+])
 
 # Load .env so DB_USER / DB_PASSWORD are available to verifiers
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
