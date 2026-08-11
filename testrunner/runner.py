@@ -12,6 +12,24 @@ import requests
 
 from . import schema, verifiers
 
+# Dev MSK cluster: the fallback every entry point (CLI, dashboard-triggered
+# run_testsuite) uses when nothing more specific is configured. Defined once here
+# so the CLI and the web-driven runner cannot drift onto two different defaults.
+# All four brokers are listed so a single unavailable broker does not fail the run.
+# A kafka:// scheme is accepted and stripped by Runner._bootstrap_servers, so this
+# can be pasted straight from a service's KAFKA_BROKER_URL config in either form.
+DEV_KAFKA_BOOTSTRAP = ",".join([
+    "b-1.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+    "b-2.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+    "b-3.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+    "b-4.test-cluster-1.l40bth.c1.kafka.us-west-2.amazonaws.com:9092",
+])
+
+
+def default_kafka_bootstrap() -> str:
+    """$KAFKA_BOOTSTRAP if set, else the dev cluster. The one place this is decided."""
+    return os.getenv("KAFKA_BOOTSTRAP", DEV_KAFKA_BOOTSTRAP)
+
 
 def _aut_db_host() -> str:
     host = os.getenv("DB_HOST", "")
@@ -140,7 +158,11 @@ class Runner:
         self.mock_base = mock_base.rstrip("/")
         self.aut_sqlite = aut_sqlite
         self.enable_kafka = enable_kafka
-        self.kafka_bootstrap = kafka_bootstrap
+        # Default here, not just in the CLI: every caller of Runner() - the CLI, the
+        # dashboard's run_testsuite command, or anything else - gets a working
+        # produce.topic path without each one having to remember to pass this.
+        # A caller that genuinely wants no fallback can pass kafka_bootstrap="".
+        self.kafka_bootstrap = kafka_bootstrap if kafka_bootstrap is not None else default_kafka_bootstrap()
         self._producer = None
 
     # --- kafka drive ---

@@ -70,6 +70,8 @@ class Command(BaseCommand):
             self.stdout.write(f"run {run_id}: {len(cases)} case(s) from {src} "
                               f"(tag={run.tag!r} filter={run.case_filter!r}) mock_base={run.mock_base}")
 
+            # kafka_bootstrap left unset: Runner.__init__ falls back to
+            # $KAFKA_BOOTSTRAP or the dev cluster, same as the CLI entry point.
             r = trunner.Runner(run.mock_base)
             passed = failed = skipped = 0
             for c in cases:
