@@ -418,8 +418,29 @@ class Runner:
         if case.db_delay_ms:
             print(f"[verify] waiting {case.db_delay_ms} ms before DB/call verification...")
             time.sleep(case.db_delay_ms / 1000)
-        errors = self.evaluate(case, response, call_baseline=baseline)
+        errors = self._evaluate_with_retry(case, response, call_baseline=baseline)
         return CaseResult(case.case_id, passed=not errors, errors=errors, responses=responses)
+
+    # --- poll-until-settled verification ---
+    # A single fixed sleep-then-check races against consumer lag: under a busy
+    # suite (concurrent producers, legacy retry backlog) the AUT's consumer can
+    # take longer than db_delay_ms to reach a given message even though it will
+    # get there. Re-run evaluate() a few more times before failing for real, so
+    # a slow-but-correct case doesn't get reported as broken.
+    _VERIFY_RETRY_INTERVAL_S = 2
+    _VERIFY_RETRY_MAX_EXTRA_S = 10
+
+    def _evaluate_with_retry(self, case: schema.Case, response, call_baseline: dict) -> list[str]:
+        errors = self.evaluate(case, response, call_baseline=call_baseline)
+        if not errors or not case.db_checks:
+            return errors
+        waited = 0
+        while errors and waited < self._VERIFY_RETRY_MAX_EXTRA_S:
+            time.sleep(self._VERIFY_RETRY_INTERVAL_S)
+            waited += self._VERIFY_RETRY_INTERVAL_S
+            print(f"[verify] retrying after {waited}s (still catching up?) ...")
+            errors = self.evaluate(case, response, call_baseline=call_baseline)
+        return errors
 
 
 def load_cases(csv_path: str) -> list[schema.Case]:
