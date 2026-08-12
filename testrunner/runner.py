@@ -416,10 +416,36 @@ class Runner:
                                   errors=[f"call step {step['url']}: expected {step['expect_status']}, got {step_resp.status_code}"])
             response = step_resp
         if case.db_delay_ms:
-            print(f"[verify] waiting {case.db_delay_ms} ms before DB/call verification...")
-            time.sleep(case.db_delay_ms / 1000)
+            self._wait_until_quiet(case.db_delay_ms / 1000)
         errors = self._evaluate_with_retry(case, response, call_baseline=baseline)
         return CaseResult(case.case_id, passed=not errors, errors=errors, responses=responses)
+
+    # --- wait for the AUT to go quiet, rather than sleeping a fixed time ---
+    # db_delay_ms used to be slept in full, every time, which is wrong in both
+    # directions: too short and the tail of a case's calls lands inside the *next*
+    # case's baseline window (a 200-event case verified at 161, and the 39 stragglers
+    # then showed up as the next case's "expected 1, got 40"); too long and every
+    # fast case pays for the slowest one. Treat db_delay_ms as a budget instead, and
+    # return as soon as the mock stops receiving calls.
+    _QUIET_POLL_S = 1.0
+    _QUIET_STABLE_POLLS = 3      # consecutive unchanged polls before calling it settled
+    _QUIET_MIN_WAIT_S = 5.0      # produce -> consume lag; counts are trivially "stable"
+                                 # before the AUT has even picked the message up
+
+    def _wait_until_quiet(self, budget_s: float) -> float:
+        prev = self._get_call_counts()
+        waited, stable = 0.0, 0
+        while waited < budget_s:
+            time.sleep(self._QUIET_POLL_S)
+            waited += self._QUIET_POLL_S
+            current = self._get_call_counts()
+            stable = stable + 1 if current == prev else 0
+            prev = current
+            if waited >= self._QUIET_MIN_WAIT_S and stable >= self._QUIET_STABLE_POLLS:
+                print(f"[verify] settled after {waited:.0f}s (budget {budget_s:.0f}s)")
+                return waited
+        print(f"[verify] still busy at budget {budget_s:.0f}s - verifying anyway")
+        return waited
 
     # --- poll-until-settled verification ---
     # A single fixed sleep-then-check races against consumer lag: under a busy

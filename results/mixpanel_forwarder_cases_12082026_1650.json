@@ -1,0 +1,63 @@
+{
+  "cases_csv": "data/mixpanel_forwarder_cases.csv",
+  "run_at": "2026-08-12T16:50:25.800287",
+  "total": 38,
+  "passed": 29,
+  "failed": 9,
+  "failing_cases": [
+    {
+      "case_id": "MPF-SW-003",
+      "errors": [
+        "db: mixpanel_forwarder_userevent.status expected 'PROCESSING', got 'PROCESSED'"
+      ]
+    },
+    {
+      "case_id": "MPF-SW-004",
+      "errors": [
+        "db: expected NO row in mixpanel_forwarder_userevent where {'event_id': 'e3537261-158e-4ca2-ab83-4e98ce9b3027'}, found 1"
+      ]
+    },
+    {
+      "case_id": "MPF-SW-005",
+      "errors": [
+        "calls: /mixpanel/track expected 0, got 1"
+      ]
+    },
+    {
+      "case_id": "MPF-SW-006",
+      "errors": [
+        "db: expected NO row in mixpanel_forwarder_userprofilestatus where {'identity': 'ec5d8355-baa7-47b0-9819-6f81db5bf4a5'}, found 4"
+      ]
+    },
+    {
+      "case_id": "MPF-DD-005",
+      "errors": [
+        "db: expected NO row in mixpanel_forwarder_userevent where {'event_id': 'f455069e-b86a-45f8-9951-783d2e6c7cbf'}, found 1"
+      ]
+    },
+    {
+      "case_id": "MPF-ST-001",
+      "errors": [
+        "calls: /mixpanel/track expected 1, got 3"
+      ]
+    },
+    {
+      "case_id": "MPF-ST-003",
+      "errors": [
+        "calls: /mixpanel/track expected >=200, got 161"
+      ]
+    },
+    {
+      "case_id": "MPF-ST-004",
+      "errors": [
+        "calls: /mixpanel/track expected 1, got 40"
+      ]
+    },
+    {
+      "case_id": "MPF-ST-006",
+      "errors": [
+        "db: expected NO row in mixpanel_forwarder_userevent where {'event_id': '26a77d47-0061-46de-91be-30b2f2d9fac2-0'}, found 1"
+      ]
+    }
+  ]
+}

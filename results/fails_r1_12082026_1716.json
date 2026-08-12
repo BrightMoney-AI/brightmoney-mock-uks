@@ -1,0 +1,8 @@
+{
+  "cases_csv": "data/retry/fails_r1.csv",
+  "run_at": "2026-08-12T17:16:15.287821",
+  "total": 3,
+  "passed": 3,
+  "failed": 0,
+  "failing_cases": []
+}

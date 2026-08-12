@@ -1,0 +1,15 @@
+{
+  "cases_csv": "data/retry/fails_2b.csv",
+  "run_at": "2026-08-12T17:22:54.075849",
+  "total": 3,
+  "passed": 2,
+  "failed": 1,
+  "failing_cases": [
+    {
+      "case_id": "MPF-DD-005",
+      "errors": [
+        "calls: /mixpanel/track expected 1, got 3"
+      ]
+    }
+  ]
+}

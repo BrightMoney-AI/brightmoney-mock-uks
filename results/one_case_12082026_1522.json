@@ -1,0 +1,17 @@
+{
+  "cases_csv": "/tmp/one_case.csv",
+  "run_at": "2026-08-12T15:22:31.180630",
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "failing_cases": [
+    {
+      "case_id": "MPF-R1-001",
+      "errors": [
+        "db: psycopg not installed \u2014 install 'psycopg[binary]' or use --aut-sqlite",
+        "db: psycopg not installed \u2014 install 'psycopg[binary]' or use --aut-sqlite",
+        "calls: /mixpanel/track expected 1, got 0"
+      ]
+    }
+  ]
+}
